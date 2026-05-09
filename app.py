@@ -11,8 +11,8 @@ QUESTIONS = [
 
 @app.route('/')
 def home():
-    return "<h1>Welcome to your Affiliate & Trivia Platform</h1><p>The site is live!</p>"
-
+   # This looks for the index.html file in your 'templates' folder
+    return render_template('index.html')
 @app.route('/get-question')
 def get_q():
     return jsonify(random.choice(QUESTIONS))
