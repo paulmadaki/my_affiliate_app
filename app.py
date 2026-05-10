@@ -9,8 +9,14 @@ from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'tech-growth-2026-key')
-# Ensures compatibility with Railway's PostgreSQL connection strings
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///app.db').replace("postgres://", "postgresql://")
+
+# Railway persistent volume support for SQLite, with PostgreSQL compatibility fallback
+if os.getenv('RAILWAY_VOLUME_MOUNT_PATH'):
+    db_path = os.path.join(os.getenv('RAILWAY_VOLUME_MOUNT_PATH'), 'database.db')
+    app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{db_path}"
+else:
+    app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///app.db').replace("postgres://", "postgresql://")
+
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
