@@ -10,13 +10,13 @@ from werkzeug.security import generate_password_hash, check_password_hash
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'tech-growth-2026-key')
 
-# Railway persistent volume support for SQLite, with PostgreSQL compatibility fallback
-if os.getenv('RAILWAY_VOLUME_MOUNT_PATH'):
-    db_path = os.path.join(os.getenv('RAILWAY_VOLUME_MOUNT_PATH'), 'database.db')
-    app.config['SQLALCHEMY_DATABASE_URI'] = f"sqlite:///{db_path}"
-else:
-    app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///app.db').replace("postgres://", "postgresql://")
+# --- DATABASE CONFIGURATION ---
+# Optimized for PostgreSQL on Railway
+database_url = os.getenv('DATABASE_URL')
+if database_url and database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
 
+app.config['SQLALCHEMY_DATABASE_URI'] = database_url or 'sqlite:///app.db'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 db = SQLAlchemy(app)
@@ -42,7 +42,7 @@ class Question(db.Model):
     option_b = db.Column(db.String(100), nullable=False)
     option_c = db.Column(db.String(100), nullable=False)
     option_d = db.Column(db.String(100), nullable=False)
-    correct_answer = db.Column(db.String(10), nullable=False) # 'A', 'B', 'C', or 'D'
+    correct_answer = db.Column(db.String(10), nullable=False) 
 
 class RechargeCard(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -62,12 +62,18 @@ class PayoutRequest(db.Model):
     status = db.Column(db.String(20), default='Pending')
     created_at = db.Column(db.DateTime, default=db.func.now())
 
+# --- INITIALIZE DATABASE ---
+# This ensures tables are created even when using Gunicorn on Railway
+with app.app_context():
+    db.create_all()
+
 @login_manager.user_loader
 def load_user(user_id):
     return User.query.get(int(user_id))
 
 # --- UTILITIES ---
 PAYSTACK_SECRET = os.getenv('PAYSTACK_SECRET')
+
 def get_naira_rate():
     try:
         res = requests.get("https://api.exchangerate-api.com/v6/latest/USD")
@@ -183,18 +189,15 @@ def check_answer():
     current_user.chances -= 1
 
     if data.get('choice') == question.correct_answer:
-        # Check if there are any pins left in your database
         pin = RechargeCard.query.filter_by(is_used=False).first()
         
         if not pin:
-            # No pins available
             db.session.commit()
             return jsonify({
                 "status": "correct_but_empty",
                 "message": "Correct! However, all airtime rewards for today have been claimed. Please try again tomorrow or contact support."
             })
         else:
-            # Logic to award the pin
             pin.is_used = True
             pin.winner_id = current_user.id
             db.session.commit()
@@ -236,6 +239,4 @@ def terms():
     return render_template('terms.html')
 
 if __name__ == "__main__":
-    with app.app_context():
-        db.create_all()
     app.run()
