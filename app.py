@@ -11,13 +11,29 @@ app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'tech-growth-2026-key')
 
 # --- DATABASE CONFIGURATION ---
-# Optimized for PostgreSQL on Railway
+# FIX 1: Railway provides "postgres://" but SQLAlchemy 1.4+ requires "postgresql://"
 database_url = os.getenv("DATABASE_URL")
 
-print("DATABASE_URL =", database_url)
+if not database_url:
+    raise RuntimeError(
+        "DATABASE_URL environment variable is not set. "
+        "Make sure your Postgres plugin is linked to this service in Railway."
+    )
+
+# Fix the scheme Railway gives us
+if database_url.startswith("postgres://"):
+    database_url = database_url.replace("postgres://", "postgresql://", 1)
+
+print("DATABASE_URL scheme =", database_url.split("@")[0].split(":")[0])  # Safe partial log
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    # FIX 2: Prevents "SSL connection has been closed unexpectedly" errors
+    # that happen when Railway recycles idle connections
+    "pool_pre_ping": True,
+    "pool_recycle": 300,
+}
 
 db = SQLAlchemy(app)
 login_manager = LoginManager(app)
@@ -42,7 +58,7 @@ class Question(db.Model):
     option_b = db.Column(db.String(100), nullable=False)
     option_c = db.Column(db.String(100), nullable=False)
     option_d = db.Column(db.String(100), nullable=False)
-    correct_answer = db.Column(db.String(10), nullable=False) 
+    correct_answer = db.Column(db.String(10), nullable=False)
 
 class RechargeCard(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -63,23 +79,28 @@ class PayoutRequest(db.Model):
     created_at = db.Column(db.DateTime, default=db.func.now())
 
 # --- INITIALIZE DATABASE ---
-# This ensures tables are created even when using Gunicorn on Railway
-with app.app_context():
-    db.create_all()
+# FIX 3: Wrap in a function so it's safe with Gunicorn multi-worker startup
+def init_db():
+    with app.app_context():
+        db.create_all()
+        print("✅ Database tables created/verified.")
 
+init_db()
+
+# FIX 4: Use db.session.get() — Query.get() is deprecated in SQLAlchemy 2.x
 @login_manager.user_loader
 def load_user(user_id):
-    return User.query.get(int(user_id))
+    return db.session.get(User, int(user_id))
 
 # --- UTILITIES ---
 PAYSTACK_SECRET = os.getenv('PAYSTACK_SECRET')
 
 def get_naira_rate():
     try:
-        res = requests.get("https://api.exchangerate-api.com/v6/latest/USD")
+        res = requests.get("https://api.exchangerate-api.com/v6/latest/USD", timeout=5)
         return res.json()['conversion_rates']['NGN']
-    except:
-        return 1500 # Fallback
+    except Exception:
+        return 1500  # Fallback
 
 # --- ROUTES ---
 
@@ -118,7 +139,7 @@ def login():
         email = request.form.get('email')
         password = request.form.get('password')
         user = User.query.filter_by(email=email).first()
-        
+
         if user and check_password_hash(user.password, password):
             login_user(user)
             return redirect(url_for('dashboard'))
@@ -170,11 +191,11 @@ def verify_payment():
 def get_question():
     if current_user.chances <= 0:
         return jsonify({"status": "error", "message": "No chances left!"})
-    
+
     all_q = Question.query.all()
     if not all_q:
         return jsonify({"status": "error", "message": "No questions in database."})
-    
+
     q = random.choice(all_q)
     return jsonify({
         "id": q.id, "question": q.text,
@@ -185,12 +206,17 @@ def get_question():
 @login_required
 def check_answer():
     data = request.json
-    question = Question.query.get(data.get('question_id'))
+    # FIX 5: Use db.session.get() instead of deprecated Query.get()
+    question = db.session.get(Question, data.get('question_id'))
+
+    if not question:
+        return jsonify({"status": "error", "message": "Question not found."})
+
     current_user.chances -= 1
 
     if data.get('choice') == question.correct_answer:
         pin = RechargeCard.query.filter_by(is_used=False).first()
-        
+
         if not pin:
             db.session.commit()
             return jsonify({
@@ -201,11 +227,8 @@ def check_answer():
             pin.is_used = True
             pin.winner_id = current_user.id
             db.session.commit()
-            return jsonify({
-                "status": "win",
-                "pin": pin.pin
-            })
-    
+            return jsonify({"status": "win", "pin": pin.pin})
+
     db.session.commit()
     return jsonify({"status": "wrong", "message": "Incorrect!"})
 
@@ -214,10 +237,12 @@ def check_answer():
 def request_payout():
     if current_user.balance_usd < 5.0:
         return jsonify({"status": "error", "message": "Minimum $5 required"})
-    
+
     new_payout = PayoutRequest(
-        user_id=current_user.id, bank_name=request.form.get('bank_name'),
-        account_number=request.form.get('account_number'), account_name=request.form.get('account_name')
+        user_id=current_user.id,
+        bank_name=request.form.get('bank_name'),
+        account_number=request.form.get('account_number'),
+        account_name=request.form.get('account_name')
     )
     current_user.balance_usd -= 5.0
     db.session.add(new_payout)
