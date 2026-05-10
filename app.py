@@ -61,9 +61,7 @@ def load_user(user_id):
     return User.query.get(int(user_id))
 
 # --- UTILITIES ---
-
-PAYSTACK_SECRET = os.getenv('PAYSTACK_SECRET', 'sk_test_f59601c7eba1f87be69bdd440d8335441725bebc')
-
+PAYSTACK_SECRET = os.getenv('PAYSTACK_SECRET')
 def get_naira_rate():
     try:
         res = requests.get("https://api.exchangerate-api.com/v6/latest/USD")
