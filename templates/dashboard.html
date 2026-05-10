@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Dashboard | {{ user.email }}</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha512-pVl7fK3sOlFj0+INRS0TtKXJ4JScK0kLkWvJsOK7o0EB9zuN04o6ZX1Gc3ZzD3i9jP8YjVi5h6y1G4Q5KpELKg==" crossorigin="anonymous" referrerpolicy="no-referrer" />
+    <style>
+        .stats-card { border-radius: 15px; border: none; }
+        .quiz-option { cursor: pointer; transition: 0.3s; }
+        .quiz-option:hover { background-color: #f8f9fa; border-color: #0d6efd; }
+    </style>
+</head>
+<body class="bg-light">
+
+<nav class="navbar navbar-dark bg-primary mb-4">
+    <div class="container">
+        <span class="navbar-brand mb-0 h1">TechGrowth Rewards</span>
+        <a href="/logout" class="btn btn-outline-light btn-sm">Logout</a>
+    </div>
+</nav>
+
+<div class="container">
+    <!-- FLASH MESSAGES -->
+    {% with messages = get_flashed_messages() %}
+      {% if messages %}
+        {% for message in messages %}
+          <div class="alert alert-info">{{ message }}</div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    <div class="row g-4">
+        <!-- BALANCE & STATS -->
+        <div class="col-md-4">
+            <div class="card stats-card shadow-sm p-4 text-center">
+                <h6 class="text-muted text-uppercase">Balance</h6>
+                <h2 class="text-primary">${{ "%.2f"|format(user.balance_usd) }}</h2>
+                <p class="small">Min. Withdrawal: $5.00</p>
+            </div>
+        </div>
+
+        <div class="col-md-4">
+            <div class="card stats-card shadow-sm p-4 text-center">
+                <h6 class="text-muted text-uppercase">Game Chances</h6>
+                <h2 class="text-success">{{ user.chances }}</h2>
+                <p class="small">Refer to earn more</p>
+            </div>
+        </div>
+
+        <div class="col-md-4">
+            <div class="card stats-card shadow-sm p-4 text-center">
+                <h6 class="text-muted text-uppercase">Status</h6>
+                {% if user.is_active_member %}
+                    <span class="badge bg-success">Active Member</span>
+                {% else %}
+                    <span class="badge bg-danger">Inactive</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <!-- MAIN ACTION AREA -->
+    <div class="mt-4">
+        {% if not user.is_active_member %}
+            <div class="card border-warning p-4 text-center shadow-sm">
+                <h4>Activate Your Account</h4>
+                <p>Pay a one-time fee of $2 (Naira equivalent) to unlock withdrawals and gaming.</p>
+                <a href="/pay" class="btn btn-warning btn-lg">Pay with Paystack</a>
+            </div>
+        {% else %}
+            <div class="row">
+                <div class="col-md-7">
+                    <div class="card shadow-sm p-4 mb-4">
+                        <h5>Play Trivia & Win</h5>
+                        <div class="mb-3">
+                            {% if pins_count > 0 %}
+                                <span class="badge bg-success"><i class="fas fa-check-circle me-1"></i> Airtime Pins Available</span>
+                            {% else %}
+                                <span class="badge bg-danger"><i class="fas fa-clock me-1"></i> No Pins Today - Check back tomorrow!</span>
+                            {% endif %}
+                        </div>
+                        <p>Answer correctly to win an instant airtime recharge pin!</p>
+                        <button class="btn btn-success w-100 py-3" onclick="startTrivia()">START TRIVIA GAME</button>
+                    </div>
+
+                    <div class="card shadow-sm p-4">
+                        <h5>Your Referral Link</h5>
+                        <p class="text-muted small">Earn $0.50 for every friend who joins and activates.</p>
+                        <div class="input-group">
+                            <input type="text" id="refLink" class="form-control bg-white" value="{{ request.host_url }}register?ref={{ user.referral_code }}" readonly>
+                            <button class="btn btn-primary" onclick="copyLink()">Copy</button>
+                        </div>
+                    </div>
+
+                    <!-- WHATSAPP GROUP SECTION -->
+                    <div class="card shadow-sm p-4 mt-4">
+                        <h5>Join Our WhatsApp Community</h5>
+                        <p class="text-muted small">Connect with other members, get updates, and share tips!</p>
+                        <a href="https://chat.whatsapp.com/JAS925JbxNn5oRrs7ONdZV" target="_blank" class="btn btn-success w-100">
+                            Join WhatsApp Group
+                        </a>
+                    </div>
+                </div>
+
+                <div class="col-md-5">
+                    <!-- WITHDRAWAL SECTION -->
+                    {% if user.balance_usd >= 5.0 %}
+                    <div class="card border-success shadow-sm p-4">
+                        <h5 class="text-success">Request Payout</h5>
+                        <form id="payoutForm">
+                            <input type="text" name="bank_name" class="form-control mb-2" placeholder="Bank Name" required>
+                            <input type="text" name="account_number" class="form-control mb-2" placeholder="Account Number" required>
+                            <input type="text" name="account_name" class="form-control mb-2" placeholder="Account Name" required>
+                            <button type="submit" class="btn btn-success w-100">Withdraw $5.00</button>
+                        </form>
+                    </div>
+                    {% else %}
+                    <div class="alert alert-secondary">
+                        <strong>Withdrawal:</strong> You need at least $5.00 in your balance to request a payout.
+                    </div>
+                    {% endif %}
+                </div>
+            </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- TRIVIA MODAL -->
+<div class="modal fade" id="triviaModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Trivia Question</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <h5 id="qText" class="mb-4"></h5>
+        <div class="list-group">
+            <button class="list-group-item list-group-item-action quiz-option" onclick="submitAns('A')">A) <span id="optA"></span></button>
+            <button class="list-group-item list-group-item-action quiz-option" onclick="submitAns('B')">B) <span id="optB"></span></button>
+            <button class="list-group-item list-group-item-action quiz-option" onclick="submitAns('C')">C) <span id="optC"></span></button>
+            <button class="list-group-item list-group-item-action quiz-option" onclick="submitAns('D')">D) <span id="optD"></span></button>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- GAME RESULT MODAL -->
+<div class="modal fade" id="gameResultModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="game-result-title">Game Result</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body" id="game-result-body"></div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+let currentQuestionId = null;
+const triviaModal = new bootstrap.Modal(document.getElementById('triviaModal'));
+
+function copyLink() {
+    var copyText = document.getElementById("refLink");
+    copyText.select();
+    navigator.clipboard.writeText(copyText.value);
+    alert("Referral link copied!");
+}
+
+async function startTrivia() {
+    const res = await fetch('/get-question');
+    const data = await res.json();
+    
+    if(data.status === 'error') {
+        alert(data.message);
+    } else {
+        currentQuestionId = data.id;
+        document.getElementById('qText').innerText = data.question;
+        document.getElementById('optA').innerText = data.options.A;
+        document.getElementById('optB').innerText = data.options.B;
+        document.getElementById('optC').innerText = data.options.C;
+        document.getElementById('optD').innerText = data.options.D;
+        triviaModal.show();
+    }
+}
+
+async function submitAns(choice) {
+    const res = await fetch('/check-answer', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({question_id: currentQuestionId, choice: choice})
+    });
+    const data = await res.json();
+    triviaModal.hide();
+
+    const chancesEl = document.getElementById('chancesCount');
+    if (chancesEl) {
+        const currentChances = parseInt(chancesEl.innerText, 10);
+        if (!isNaN(currentChances)) {
+            chancesEl.innerText = Math.max(0, currentChances - 1);
+        }
+    }
+
+    if (data.status === "correct_but_empty") {
+        showGameResult("Great Job! 🌟", `
+            <div class="text-center">
+                <i class="fas fa-exclamation-circle text-warning mb-3" style="font-size: 3rem;"></i>
+                <p class="fw-bold">${data.message}</p>
+                <p class="small text-muted">Your win has been recorded. Follow us on WhatsApp for restock updates!</p>
+            </div>
+        `);
+    } else if (data.status === "win") {
+        showGameResult("You Won! 🏆", `
+            <div class="text-center">
+                <i class="fas fa-trophy text-success mb-3" style="font-size: 3rem;"></i>
+                <p class="fw-bold">Congratulations! Your voucher code is:</p>
+                <p class="fs-5">${data.pin}</p>
+            </div>
+        `);
+    } else {
+        showGameResult("Incorrect Answer", `
+            <div class="text-center">
+                <i class="fas fa-xmark-circle text-danger mb-3" style="font-size: 3rem;"></i>
+                <p class="fw-bold">${data.message}</p>
+            </div>
+        `);
+    }
+}
+
+function showGameResult(title, htmlContent) {
+    document.getElementById('game-result-title').innerText = title;
+    document.getElementById('game-result-body').innerHTML = htmlContent;
+    const resultModal = new bootstrap.Modal(document.getElementById('gameResultModal'));
+    resultModal.show();
+}
+
+// Handle Payout Form
+if(document.getElementById('payoutForm')) {
+    document.getElementById('payoutForm').onsubmit = async (e) => {
+        e.preventDefault();
+        const formData = new FormData(e.target);
+        const res = await fetch('/request-payout', { method: 'POST', body: formData });
+        const data = await res.json();
+        alert(data.message);
+        location.reload();
+    };
+}
+</script>
+</body>
+</html>

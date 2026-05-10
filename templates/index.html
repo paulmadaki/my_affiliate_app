@@ -1,37 +1,189 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>Trivia & Earn</title>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <!-- Meta Tags for Social Media Retargeting -->
+    <meta property="og:title" content="PoloTech | Play Trivia & Earn Airtime">
+    <meta property="og:description" content="Join thousands of Nigerians winning daily. Get $0.50 per referral!">
+    <meta property="og:image" content="https://img.freepik.com/free-vector/mobile-banking-concept-illustration_114360-17343.jpg">
+    <meta property="og:url" content="https://web-production-e66e3.up.railway.app/">
+    
+    <title>PoloTech | Refer, Play & Earn Airtime</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
     <style>
-        body { font-family: sans-serif; text-align: center; padding: 50px; }
-        .box { border: 1px solid #ccc; padding: 20px; border-radius: 10px; display: inline-block; }
-        button { background: #007bff; color: white; border: none; padding: 10px 20px; cursor: pointer; }
+        :root { --primary-blue: #0d6efd; --success-green: #198754; --dark-navy: #011b33; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow-x: hidden; }
+        .hero-section { background: linear-gradient(135deg, #0d6efd 0%, #003d99 100%); color: white; padding: 100px 0; }
+        .feature-icon { font-size: 2.5rem; color: var(--primary-blue); margin-bottom: 20px; }
+        .paystack-badge { border: 1px solid #e0e0e0; border-radius: 12px; padding: 15px; background: #f8f9fa; display: inline-flex; align-items: center; }
+        .step-card { border: none; border-radius: 15px; transition: 0.3s; box-shadow: 0 4px 6px rgba(0,0,0,0.05); }
+        .step-card:hover { transform: translateY(-10px); box-shadow: 0 10px 20px rgba(0,0,0,0.1); }
+        .navbar-brand { letter-spacing: -1px; }
     </style>
 </head>
 <body>
-    <h1>Welcome to your Tech Platform</h1>
-    <div class="box">
-        <h3>Trivia Game</h3>
-        <p id="question">Loading question...</p>
-        <div id="options"></div>
-    </div>
-    <hr>
-    <p>Registration Fee: $2 (Pay in Naira via Paystack)</p>
-    <button onclick="alert('Paystack logic coming next!')">Register to Earn $0.50/Referral</button>
 
-    <script>
-        // This script will talk to your Python backend
-        fetch('/get-question')
-            .then(res => res.json())
-            .then(data => {
-                document.getElementById('question').innerText = data.question;
-                data.options.forEach(opt => {
-                    let btn = document.createElement('button');
-                    btn.innerText = opt;
-                    btn.style.margin = "5px";
-                    document.getElementById('options').appendChild(btn);
-                });
-            });
-    </script>
+<!-- Navbar -->
+<nav class="navbar navbar-expand-lg navbar-light bg-white sticky-top shadow-sm">
+    <div class="container">
+        <a class="navbar-brand fw-bold text-primary fs-3" href="#">PoloTech</a>
+        <div class="ms-auto">
+            <a href="/login" class="btn btn-outline-primary me-2">Login</a>
+            <a href="/register" class="btn btn-primary fw-bold">Join Now</a>
+        </div>
+    </div>
+</nav>
+
+<!-- Hero Section -->
+<section class="hero-section text-center">
+    <div class="container">
+        <h1 class="display-3 fw-bold mb-4">Turn Your Knowledge Into Airtime & Cash</h1>
+        <p class="lead mb-5 opacity-75">The #1 platform in Nigeria for trivia lovers and digital earners. Secure, fast, and verified.</p>
+        <div class="d-grid gap-3 d-sm-flex justify-content-sm-center">
+            <a href="/register" class="btn btn-light btn-lg px-5 fw-bold text-primary">Get Started Now</a>
+            <a href="#how-it-works" class="btn btn-outline-light btn-lg px-5">How It Works</a>
+        </div>
+    </div>
+</section>
+
+<!-- Features -->
+<section class="py-5 bg-light" id="how-it-works">
+    <div class="container">
+        <div class="text-center mb-5">
+            <h2 class="fw-bold">Start Earning in 3 Steps</h2>
+            <p class="text-muted">Simple, transparent, and rewarding.</p>
+        </div>
+        <div class="row g-4">
+            <div class="col-md-4 text-center">
+                <div class="card p-4 step-card h-100">
+                    <i class="fas fa-user-plus feature-icon"></i>
+                    <h4 class="fw-bold">1. Register</h4>
+                    <p class="text-muted">Create your account and activate with a one-time fee of $2 (paid in Naira).</p>
+                </div>
+            </div>
+            <div class="col-md-4 text-center">
+                <div class="card p-4 step-card h-100">
+                    <i class="fas fa-gamepad feature-icon"></i>
+                    <h4 class="fw-bold">2. Play Trivia</h4>
+                    <p class="text-muted">Win instant MTN, Airtel, Glo, or 9mobile recharge pins for every correct answer.</p>
+                </div>
+            </div>
+            <div class="col-md-4 text-center">
+                <div class="card p-4 step-card h-100">
+                    <i class="fas fa-share-nodes feature-icon"></i>
+                    <h4 class="fw-bold">3. Refer & Earn</h4>
+                    <p class="text-muted">Share your link and earn $0.50 (₦800+) per friend. Withdraw straight to your bank.</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- Trust/Payment Section -->
+<section class="py-5">
+    <div class="container">
+        <div class="row align-items-center g-5">
+            <div class="col-lg-6">
+                <h2 class="fw-bold mb-4">Fast & Secure Payments</h2>
+                <p class="lead text-muted mb-4">We've partnered with <strong>Paystack</strong> to ensure your transactions are 100% encrypted and safe. Pay easily with:</p>
+                <ul class="list-unstyled mb-4">
+                    <li class="mb-2"><i class="fas fa-check-circle text-success me-2"></i> All Naira Debit Cards (Verve, Visa, Mastercard)</li>
+                    <li class="mb-2"><i class="fas fa-check-circle text-success me-2"></i> Direct Bank Transfers</li>
+                    <li class="mb-2"><i class="fas fa-check-circle text-success me-2"></i> USSD & Secure Mobile Apps</li>
+                </ul>
+                
+                <!-- REPLACEMENT FOR BROKEN PAYSTACK IMAGE -->
+                <div class="paystack-badge">
+                    <svg width="24" height="24" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" class="me-2">
+                        <circle cx="50" cy="50" r="50" fill="#00C3F7"/>
+                        <path d="M70 35L45 60L30 45" stroke="white" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span class="fw-bold" style="color: #011b33;">Secured by Paystack</span>
+                </div>
+            </div>
+            <!-- Trust/Payment Section -->
+<section class="py-5">
+    <div class="container">
+        <div class="row align-items-center g-5">
+            <!-- Left Side: Text & Paystack Badge -->
+            <div class="col-lg-6">
+                <h2 class="fw-bold mb-4">Fast & Secure Payments</h2>
+                <p class="lead text-muted mb-4">We've partnered with <strong>Paystack</strong> to ensure your transactions are 100% encrypted and safe. Pay your $2 activation fee easily using:</p>
+                
+                <ul class="list-unstyled mb-4">
+                    <li class="mb-3 d-flex align-items-center">
+                        <i class="fas fa-check-circle text-success me-3 fs-5"></i> 
+                        <span>All Naira Debit Cards (Verve, Visa, Mastercard)</span>
+                    </li>
+                    <li class="mb-3 d-flex align-items-center">
+                        <i class="fas fa-check-circle text-success me-3 fs-5"></i> 
+                        <span>Direct Bank Transfers & USSD Codes</span>
+                    </li>
+                    <li class="mb-3 d-flex align-items-center">
+                        <i class="fas fa-check-circle text-success me-3 fs-5"></i> 
+                        <span>Secure Mobile Banking Apps</span>
+                    </li>
+                </ul>
+                
+                <!-- Bulletproof Paystack Trust Badge -->
+                <div class="paystack-badge shadow-sm d-inline-flex align-items-center bg-white border p-3 rounded-3">
+                    <svg width="24" height="24" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" class="me-2">
+                        <circle cx="50" cy="50" r="50" fill="#00C3F7"/>
+                        <path d="M70 35L45 60L30 45" stroke="white" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+                    </svg>
+                    <span class="fw-bold" style="color: #011b33;">Secured by Paystack</span>
+                </div>
+            </div>
+
+            <!-- Right Side: The Bulletproof Icon Illustration -->
+            <div class="col-lg-6 text-center">
+                <div class="position-relative d-inline-block">
+                    <!-- Outer Decorative Glow -->
+                    <div class="p-5 bg-white rounded-circle shadow-lg d-flex align-items-center justify-content-center" 
+                         style="width: 280px; height: 280px; border: 8px solid #f0f7ff;">
+                        <i class="fas fa-user-shield text-primary" style="font-size: 100px;"></i>
+                    </div>
+                    
+                    <!-- Floating Security Badge -->
+                    <div class="position-absolute bottom-0 start-50 translate-middle-x mb-n3">
+                        <span class="badge bg-success shadow px-4 py-2 rounded-pill fs-6">
+                            <i class="fas fa-lock me-2"></i> 256-bit SSL Secure
+                        </span>
+                    </div>
+                </div>
+                
+                <!-- Added Text for Conversion -->
+                <p class="mt-4 text-muted small fw-bold text-uppercase tracking-wider">
+                    Your Data & Funds are 100% Protected
+                </p>
+            </div>
+        </div>
+    </div>
+</section>
+
+<!-- CTA -->
+<section class="py-5 bg-primary text-white text-center">
+    <div class="container py-4">
+        <h2 class="fw-bold mb-4">Ready to join PoloTech?</h2>
+        <p class="mb-4 opacity-75">Don't miss out on daily airtime wins and referral bonuses.</p>
+        <a href="/register" class="btn btn-warning btn-lg px-5 fw-bold shadow">Create My Account Now</a>
+    </div>
+</section>
+
+<!-- Footer -->
+<footer class="py-5 bg-dark text-white text-center">
+    <div class="container">
+        <h4 class="fw-bold mb-4">PoloTech</h4>
+        <p class="mb-1 text-white-50">© 2026 Polo Tech and Media Enterprises. All Rights Reserved.</p>
+        <p class="small text-white-50 mb-4">Registered with Corporate Affairs Commission (CAC)</p>
+        <div class="small">
+            <a href="/privacy" class="text-white-50 text-decoration-none me-3">Privacy Policy</a>
+            <a href="/terms" class="text-white-50 text-decoration-none">Terms of Service</a>
+        </div>
+    </div>
+</footer>
+
 </body>
 </html>

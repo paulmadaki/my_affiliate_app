@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Join PoloTech | Register & Earn</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <style>
+        body { background-color: #f8f9fa; }
+        .info-box { background: #fff; border-radius: 12px; border-left: 5px solid #0d6efd; }
+        .benefit-icon { color: #198754; margin-right: 10px; }
+        .paystack-footer { background: #011b33; color: white; border-radius: 8px; padding: 12px; }
+    </style>
+</head>
+<body>
+
+<div class="container py-5">
+    <div class="row justify-content-center g-5">
+        <!-- LEFT SIDE: Registration Form -->
+        <div class="col-md-5">
+            <div class="card shadow-lg p-4 border-0 mb-4">
+                <div class="text-center mb-4">
+                    <h2 class="fw-bold text-primary">PoloTech</h2>
+                    <p class="text-muted">Register to start winning airtime</p>
+                </div>
+
+                <!-- FLASH MESSAGES -->
+                {% with messages = get_flashed_messages() %}
+                  {% if messages %}
+                    {% for message in messages %}
+                      <div class="alert alert-danger small py-2">{{ message }}</div>
+                    {% endfor %}
+                  {% endif %}
+                {% endwith %}
+
+                <form action="/register" method="POST">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Email Address</label>
+                        <div class="input-group">
+                            <span class="input-group-text bg-white"><i class="fas fa-envelope text-muted"></i></span>
+                            <input type="email" name="email" class="form-control border-start-0" placeholder="name@example.com" required>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Password</label>
+                        <div class="input-group">
+                            <span class="input-group-text bg-white"><i class="fas fa-lock text-muted"></i></span>
+                            <input type="password" name="password" class="form-control border-start-0" placeholder="Min. 6 characters" required>
+                        </div>
+                    </div>
+                    
+                    <!-- HIDDEN REFERRAL TRACKER -->
+                    <input type="hidden" name="ref" value="{{ ref_code }}">
+
+                    <button type="submit" class="btn btn-primary w-100 fw-bold py-2 mb-3 shadow-sm">
+                        CREATE ACCOUNT <i class="fas fa-arrow-right ms-2"></i>
+                    </button>
+                </form>
+
+                <p class="text-center small">Already a member? <a href="/login" class="text-decoration-none fw-bold">Login here</a></p>
+            </div>
+
+            <!-- PERMANENT PAYSTACK BADGE (No Image Needed) -->
+            <div class="paystack-footer d-flex align-items-center justify-content-center">
+                <svg width="20" height="20" viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg" class="me-2">
+                    <circle cx="50" cy="50" r="50" fill="#00C3F7"/>
+                    <path d="M70 35L45 60L30 45" stroke="white" stroke-width="10" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                <span class="small">Secured by <strong>Paystack</strong></span>
+            </div>
+        </div>
+
+        <!-- RIGHT SIDE: Vital Platform Info -->
+        <div class="col-md-6">
+            <div class="info-box shadow-sm p-4 mb-4">
+                <h4 class="fw-bold"><i class="fas fa-rocket text-primary me-2"></i>What is PoloTech?</h4>
+                <p class="text-muted">The #1 community for trivia lovers in Nigeria. Join thousands of users who test their knowledge and earn rewards every single day.</p>
+            </div>
+
+            <div class="card shadow-sm p-4 border-0 mb-4">
+                <h5 class="fw-bold mb-3">Member Benefits:</h5>
+                <ul class="list-unstyled">
+                    <li class="mb-3">
+                        <i class="fas fa-check-circle benefit-icon"></i>
+                        <strong>Win Instant Airtime:</strong> Correct answers unlock MTN, Airtel, and Glo PINs instantly.
+                    </li>
+                    <li class="mb-3">
+                        <i class="fas fa-check-circle benefit-icon"></i>
+                        <strong>Earn ₦800 per Referral:</strong> Invite friends and get $0.50 credited for every activation.
+                    </li>
+                    <li class="mb-3">
+                        <i class="fas fa-check-circle benefit-icon"></i>
+                        <strong>Easy Bank Payouts:</strong> Withdraw your referral earnings straight to any Nigerian bank.
+                    </li>
+                </ul>
+            </div>
+
+            <div class="alert alert-info border-0 shadow-sm">
+                <i class="fas fa-shield-alt me-2"></i> <strong>Safe & Verified:</strong> Polo Tech and Media Enterprises is a CAC-registered business. All card payments are encrypted.
+            </div>
+        </div>
+    </div>
+</div>
+
+<footer class="text-center text-muted pb-5">
+    <p class="small mb-1">© 2026 Polo Tech and Media Enterprises</p>
+    <div class="small">
+        <a href="/privacy" class="text-muted me-2 text-decoration-none">Privacy Policy</a> | 
+        <a href="/terms" class="text-muted ms-2 text-decoration-none">Terms & Conditions</a>
+    </div>
+</footer>
+
+</body>
+</html>
