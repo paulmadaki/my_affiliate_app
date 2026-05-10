@@ -12,13 +12,9 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'tech-growth-2026-key')
 
 # --- DATABASE CONFIGURATION ---
 # Optimized for PostgreSQL on Railway
-database_url = os.getenv('DATABASE_URL')
-if database_url and database_url.startswith("postgres://"):
-    database_url = database_url.replace("postgres://", "postgresql://", 1)
+database_url = os.getenv("DATABASE_URL")
 
-# Require DATABASE_URL and use it for SQLAlchemy connection
-if not database_url:
-    raise ValueError("DATABASE_URL missing")
+print("DATABASE_URL =", database_url)
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
