@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Join PoloTech | Register & Earn</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <style>
         body { background-color: #f8f9fa; }
         .info-box { background: #fff; border-radius: 12px; border-left: 5px solid #0d6efd; }
@@ -13,6 +13,26 @@
         .paystack-footer { background: #011b33; color: white; border-radius: 8px; padding: 12px; }
         .exchange-rate-box { background: #e7f3ff; border-left: 4px solid #0d6efd; padding: 15px; border-radius: 8px; }
         .exchange-rate-value { font-size: 1.8rem; font-weight: bold; color: #0d6efd; }
+        .password-input-group {
+            position: relative;
+        }
+        .password-input-group input {
+            padding-right: 40px;
+        }
+        .toggle-password-btn {
+            position: absolute;
+            right: 12px;
+            top: 38px;
+            background: none;
+            border: none;
+            cursor: pointer;
+            color: #6c757d;
+            transition: color 0.2s;
+            z-index: 10;
+        }
+        .toggle-password-btn:hover {
+            color: #0d6efd;
+        }
     </style>
 </head>
 <body>
@@ -52,9 +72,11 @@
                     </div>
                     <div class="mb-3">
                         <label class="form-label fw-bold">Password</label>
-                        <div class="input-group">
-                            <span class="input-group-text bg-white"><i class="fas fa-lock text-muted"></i></span>
-                            <input type="password" name="password" class="form-control border-start-0" placeholder="Min. 6 characters" required>
+                        <div class="password-input-group">
+                            <input type="password" name="password" id="registerPassword" class="form-control" placeholder="Min. 6 characters" required>
+                            <button type="button" class="toggle-password-btn" onclick="toggleRegisterPassword()">
+                                <i class="fas fa-eye" id="registerPasswordIcon"></i>
+                            </button>
                         </div>
                     </div>
                     <div class="mb-3">
@@ -135,6 +157,22 @@
 </footer>
 
 <script>
+// Toggle password visibility for registration
+function toggleRegisterPassword() {
+    const passwordField = document.getElementById('registerPassword');
+    const icon = document.getElementById('registerPasswordIcon');
+    
+    if (passwordField.type === 'password') {
+        passwordField.type = 'text';
+        icon.classList.remove('fa-eye');
+        icon.classList.add('fa-eye-slash');
+    } else {
+        passwordField.type = 'password';
+        icon.classList.remove('fa-eye-slash');
+        icon.classList.add('fa-eye');
+    }
+}
+
 // Update exchange rate dynamically
 async function updateExchangeRate() {
     try {
