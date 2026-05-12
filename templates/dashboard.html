@@ -15,7 +15,15 @@
 <nav class="navbar navbar-dark bg-primary mb-4">
     <div class="container">
         <span class="navbar-brand mb-0 h1">TechGrowth Rewards</span>
-        <a href="/logout" class="btn btn-outline-light btn-sm">Logout</a>
+        <div class="d-flex gap-2">
+            <a href="/withdrawal-history" class="btn btn-outline-light btn-sm" title="View withdrawal history">
+                <i class="fas fa-history me-1"></i>Withdrawals
+            </a>
+            <a href="/referral-history" class="btn btn-outline-light btn-sm" title="View referral history">
+                <i class="fas fa-users me-1"></i>Referrals
+            </a>
+            <a href="/logout" class="btn btn-outline-light btn-sm">Logout</a>
+        </div>
     </div>
 </nav>
 
@@ -106,17 +114,39 @@
                     <!-- WITHDRAWAL SECTION -->
                     {% if user.balance_usd >= 5.0 %}
                     <div class="card border-success shadow-sm p-4">
-                        <h5 class="text-success">Request Payout</h5>
+                        <h5 class="text-success"><i class="fas fa-money-bill-wave me-2"></i>Request Payout</h5>
+                        
+                        <!-- DEDUCTION BREAKDOWN -->
+                        <div class="alert alert-info small mb-3">
+                            <div class="d-flex justify-content-between mb-2">
+                                <span>Amount Requested:</span>
+                                <strong>$5.00</strong>
+                            </div>
+                            <div class="d-flex justify-content-between mb-2 text-danger">
+                                <span>Processing Fee (10%):</span>
+                                <strong>-$0.50</strong>
+                            </div>
+                            <hr class="my-2">
+                            <div class="d-flex justify-content-between text-success">
+                                <span>You Will Receive:</span>
+                                <strong>$4.50</strong>
+                            </div>
+                        </div>
+
                         <form id="payoutForm">
                             <input type="text" name="bank_name" class="form-control mb-2" placeholder="Bank Name" required>
                             <input type="text" name="account_number" class="form-control mb-2" placeholder="Account Number" required>
                             <input type="text" name="account_name" class="form-control mb-2" placeholder="Account Name" required>
-                            <button type="submit" class="btn btn-success w-100">Withdraw $5.00</button>
+                            <button type="submit" class="btn btn-success w-100">
+                                <i class="fas fa-check me-1"></i>Confirm Withdrawal
+                            </button>
                         </form>
+                        <small class="text-muted d-block mt-2">Processing time: 24-48 hours</small>
                     </div>
                     {% else %}
                     <div class="alert alert-secondary">
-                        <strong>Withdrawal:</strong> You need at least $5.00 in your balance to request a payout.
+                        <i class="fas fa-info-circle me-2"></i>
+                        <strong>Withdrawal:</strong> You need at least $5.00 in your balance to request a payout. Current balance: ${{ "%.2f"|format(user.balance_usd) }}
                     </div>
                     {% endif %}
                 </div>
@@ -248,7 +278,13 @@ if(document.getElementById('payoutForm')) {
         const formData = new FormData(e.target);
         const res = await fetch('/request-payout', { method: 'POST', body: formData });
         const data = await res.json();
-        alert(data.message);
+        
+        if (data.status === 'success') {
+            const details = data.details;
+            alert(`✓ Withdrawal request submitted!\n\nOriginal Amount: $${details.original_amount}\nFee (10%): -$${details.deduction_fee}\nYou will receive: $${details.net_amount}\n\nProcessing time: 24-48 hours`);
+        } else {
+            alert(`❌ Error: ${data.message}`);
+        }
         location.reload();
     };
 }
