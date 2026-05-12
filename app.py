@@ -2,6 +2,7 @@ import os
 import uuid
 import requests
 import random
+from datetime import datetime, date
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
@@ -53,6 +54,7 @@ class User(UserMixin, db.Model):
     whatsapp_number = db.Column(db.String(20), nullable=True)
     location = db.Column(db.String(255), nullable=True)  # Format: Country/State/City
     created_at = db.Column(db.DateTime, default=db.func.now())
+    last_chance_reset = db.Column(db.DateTime, default=db.func.now())
 
 class Question(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -239,6 +241,20 @@ def verify_payment():
 @app.route('/get-question')
 @login_required
 def get_question():
+    # Daily chances reset and referral check
+    today = date.today()
+    if current_user.last_chance_reset.date() != today:
+        current_user.chances = 5
+        # Check if user referred at least one person today
+        referrals_today = ReferralHistory.query.filter(
+            ReferralHistory.referrer_id == current_user.id,
+            db.func.date(ReferralHistory.created_at) == today
+        ).count()
+        if referrals_today >= 1:
+            current_user.chances = 999  # Unlimited chances
+        current_user.last_chance_reset = datetime.now()
+        db.session.commit()  # Commit the reset
+
     if current_user.chances <= 0:
         return jsonify({"status": "error", "message": "No chances left!"})
 
@@ -262,7 +278,21 @@ def check_answer():
     if not question:
         return jsonify({"status": "error", "message": "Question not found."})
 
-    current_user.chances -= 1
+    # Daily chances reset and referral check
+    today = date.today()
+    if current_user.last_chance_reset.date() != today:
+        current_user.chances = 5
+        # Check if user referred at least one person today
+        referrals_today = ReferralHistory.query.filter(
+            ReferralHistory.referrer_id == current_user.id,
+            db.func.date(ReferralHistory.created_at) == today
+        ).count()
+        if referrals_today >= 1:
+            current_user.chances = 999  # Unlimited chances
+        current_user.last_chance_reset = datetime.now()
+
+    if current_user.chances < 999:  # Only decrement if not unlimited
+        current_user.chances -= 1
 
     if data.get('choice') == question.correct_answer:
         pin = RechargeCard.query.filter_by(is_used=False).first()

@@ -71,7 +71,7 @@
         <div class="col-md-4">
             <div class="card stats-card shadow-sm p-4 text-center">
                 <h6 class="text-muted text-uppercase">Game Chances</h6>
-                <h2 class="text-success">{{ user.chances }}</h2>
+                <h2 class="text-success" id="chancesCount">{% if user.chances >= 999 %}Unlimited{% else %}{{ user.chances }}{% endif %}</h2>
                 <p class="small">Refer to earn more</p>
             </div>
         </div>
@@ -253,9 +253,12 @@ async function submitAns(choice) {
 
     const chancesEl = document.getElementById('chancesCount');
     if (chancesEl) {
-        const currentChances = parseInt(chancesEl.innerText, 10);
-        if (!isNaN(currentChances)) {
-            chancesEl.innerText = Math.max(0, currentChances - 1);
+        const currentText = chancesEl.innerText.trim();
+        if (currentText !== 'Unlimited') {
+            const currentChances = parseInt(currentText, 10);
+            if (!isNaN(currentChances)) {
+                chancesEl.innerText = Math.max(0, currentChances - 1);
+            }
         }
     }
 
