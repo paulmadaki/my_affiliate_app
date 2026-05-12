@@ -130,12 +130,20 @@ def register():
         whatsapp_number = request.form.get('whatsapp_number')
         location = request.form.get('location')
 
+        if not email or not password or not whatsapp_number or not location:
+            flash("Please fill in all required fields.")
+            return redirect(url_for('register'))
+
+        if len(password) < 6:
+            flash("Password must be at least 6 characters.")
+            return redirect(url_for('register'))
+
         if User.query.filter_by(email=email).first():
             flash("Email already exists!")
             return redirect(url_for('register'))
 
         # Validate WhatsApp number (basic validation)
-        if whatsapp_number and not whatsapp_number.replace('+', '').isdigit():
+        if not whatsapp_number.replace('+', '').isdigit():
             flash("Invalid WhatsApp number format!")
             return redirect(url_for('register'))
 

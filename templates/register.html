@@ -62,12 +62,12 @@
                   {% endif %}
                 {% endwith %}
 
-                <form action="/register" method="POST">
+                <form action="/register" method="POST" onsubmit="return validateRegistration()">
                     <div class="mb-3">
                         <label class="form-label fw-bold">Email Address</label>
                         <div class="input-group">
                             <span class="input-group-text bg-white"><i class="fas fa-envelope text-muted"></i></span>
-                            <input type="email" name="email" class="form-control border-start-0" placeholder="name@example.com" required>
+                            <input type="email" name="email" id="registerEmail" class="form-control border-start-0" placeholder="name@example.com" required>
                         </div>
                     </div>
                     <div class="mb-3">
@@ -83,7 +83,7 @@
                         <label class="form-label fw-bold">WhatsApp Number</label>
                         <div class="input-group">
                             <span class="input-group-text bg-white"><i class="fas fa-phone text-muted"></i></span>
-                            <input type="tel" name="whatsapp_number" class="form-control border-start-0" placeholder="+234..." required>
+                            <input type="tel" name="whatsapp_number" id="registerWhatsApp" class="form-control border-start-0" placeholder="+234..." required>
                         </div>
                         <small class="text-muted">Include country code (e.g., +2348012345678)</small>
                     </div>
@@ -171,6 +171,38 @@ function toggleRegisterPassword() {
         icon.classList.remove('fa-eye-slash');
         icon.classList.add('fa-eye');
     }
+}
+
+function validateRegistration() {
+    const email = document.getElementById('registerEmail').value.trim();
+    const password = document.getElementById('registerPassword').value;
+    const whatsapp = document.getElementById('registerWhatsApp').value.trim();
+    const location = document.querySelector('input[name="location"]').value.trim();
+
+    const whatsappPattern = /^\+?[0-9]{7,15}$/;
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    if (!email || !emailPattern.test(email)) {
+        alert('Please enter a valid email address.');
+        return false;
+    }
+
+    if (!password || password.length < 6) {
+        alert('Password must be at least 6 characters long.');
+        return false;
+    }
+
+    if (!whatsapp || !whatsappPattern.test(whatsapp)) {
+        alert('Enter a valid WhatsApp number, including country code (e.g. +2348012345678).');
+        return false;
+    }
+
+    if (!location || location.length < 5) {
+        alert('Please enter your location in the format Country/State/City.');
+        return false;
+    }
+
+    return true;
 }
 
 // Update exchange rate dynamically
