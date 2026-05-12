@@ -48,7 +48,7 @@ class User(UserMixin, db.Model):
     referral_code = db.Column(db.String(20), unique=True)
     referred_by = db.Column(db.String(20), nullable=True)
     balance_usd = db.Column(db.Float, default=0.0)
-    chances = db.Column(db.Integer, default=1)
+    chances = db.Column(db.Integer, default=5)
     is_active_member = db.Column(db.Boolean, default=False)
     whatsapp_number = db.Column(db.String(20), nullable=True)
     location = db.Column(db.String(255), nullable=True)  # Format: Country/State/City
