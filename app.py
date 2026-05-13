@@ -93,6 +93,17 @@ class ReferralHistory(db.Model):
     status = db.Column(db.String(20), default='Active')  # Active, Inactive, etc.
     created_at = db.Column(db.DateTime, default=db.func.now())
 
+class AnsweredQuestion(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    question_id = db.Column(db.Integer, db.ForeignKey('question.id'), nullable=False)
+    answered_by_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    selected_answer = db.Column(db.String(70), nullable=False)
+    is_correct = db.Column(db.Boolean, nullable=False)
+    answered_at = db.Column(db.DateTime, default=db.func.now())
+
+    question = db.relationship('Question', backref=db.backref('answer_records', lazy=True))
+    answered_by = db.relationship('User', foreign_keys=[answered_by_id])
+
 # --- INITIALIZE DATABASE ---
 # FIX 3: Wrap in a function so it's safe with Gunicorn multi-worker startup
 def init_db():
@@ -109,6 +120,7 @@ def load_user(user_id):
 
 # --- UTILITIES ---
 PAYSTACK_SECRET = os.getenv('PAYSTACK_SECRET')
+ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@example.com')
 
 def get_naira_rate():
     try:
@@ -196,7 +208,34 @@ def login():
 @login_required
 def dashboard():
     pins_count = RechargeCard.query.filter_by(is_used=False).count()
-    return render_template('dashboard.html', user=current_user, pins_count=pins_count)
+    answered_records = AnsweredQuestion.query.filter_by(answered_by_id=current_user.id).join(Question).order_by(AnsweredQuestion.answered_at.desc()).limit(5).all()
+    return render_template(
+        'dashboard.html',
+        user=current_user,
+        pins_count=pins_count,
+        admin_email=ADMIN_EMAIL,
+        answered_records=answered_records
+    )
+
+@app.route('/admin/questions')
+@login_required
+def admin_questions():
+    if current_user.email != ADMIN_EMAIL:
+        flash('Admin access only.')
+        return redirect(url_for('dashboard'))
+
+    questions = Question.query.order_by(Question.id).all()
+    question_status = []
+    for q in questions:
+        correct_answer = next((record for record in q.answer_records if record.is_correct), None)
+        question_status.append({
+            'id': q.id,
+            'text': q.text,
+            'answered': bool(correct_answer),
+            'answered_by': correct_answer.answered_by.email if correct_answer else None,
+            'answered_at': correct_answer.answered_at if correct_answer else None
+        })
+    return render_template('admin_questions.html', question_status=question_status)
 
 @app.route('/pay')
 @login_required
@@ -245,7 +284,6 @@ def get_question():
     today = date.today()
     if current_user.last_chance_reset.date() != today:
         current_user.chances = 5
-        # Check if user referred at least one person today
         referrals_today = ReferralHistory.query.filter(
             ReferralHistory.referrer_id == current_user.id,
             db.func.date(ReferralHistory.created_at) == today
@@ -253,7 +291,7 @@ def get_question():
         if referrals_today >= 1:
             current_user.chances = 999  # Unlimited chances
         current_user.last_chance_reset = datetime.now()
-        db.session.commit()  # Commit the reset
+        db.session.commit()
 
     if current_user.chances <= 0:
         return jsonify({"status": "error", "message": "No chances left!"})
@@ -263,6 +301,13 @@ def get_question():
         return jsonify({"status": "error", "message": "No questions in database."})
 
     q = random.choice(all_q)
+    answered_correct = AnsweredQuestion.query.filter_by(question_id=q.id, is_correct=True).first()
+    if answered_correct:
+        return jsonify({
+            "status": "already_answered",
+            "message": "This question has already been answered."
+        })
+
     return jsonify({
         "id": q.id, "question": q.text,
         "options": {"A": q.option_a, "B": q.option_b, "C": q.option_c, "D": q.option_d}
@@ -272,17 +317,19 @@ def get_question():
 @login_required
 def check_answer():
     data = request.json
-    # FIX 5: Use db.session.get() instead of deprecated Query.get()
     question = db.session.get(Question, data.get('question_id'))
 
     if not question:
         return jsonify({"status": "error", "message": "Question not found."})
 
+    answered_correct = AnsweredQuestion.query.filter_by(question_id=question.id, is_correct=True).first()
+    if answered_correct:
+        return jsonify({"status": "already_answered", "message": "This question has already been answered."})
+
     # Daily chances reset and referral check
     today = date.today()
     if current_user.last_chance_reset.date() != today:
         current_user.chances = 5
-        # Check if user referred at least one person today
         referrals_today = ReferralHistory.query.filter(
             ReferralHistory.referrer_id == current_user.id,
             db.func.date(ReferralHistory.created_at) == today
@@ -294,7 +341,16 @@ def check_answer():
     if current_user.chances < 999:  # Only decrement if not unlimited
         current_user.chances -= 1
 
-    if data.get('choice') == question.correct_answer:
+    is_correct = data.get('choice') == question.correct_answer
+    answer_record = AnsweredQuestion(
+        question_id=question.id,
+        answered_by_id=current_user.id,
+        selected_answer=data.get('choice'),
+        is_correct=is_correct
+    )
+    db.session.add(answer_record)
+
+    if is_correct:
         pin = RechargeCard.query.filter_by(is_used=False).first()
 
         if not pin:

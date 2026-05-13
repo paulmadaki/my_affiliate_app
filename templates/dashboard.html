@@ -43,6 +43,11 @@
             <a href="/referral-history" class="btn btn-outline-light btn-sm w-100 w-md-auto" title="View referral history">
                 <i class="fas fa-users me-1"></i>Referrals
             </a>
+            {% if user.email == admin_email %}
+            <a href="/admin/questions" class="btn btn-outline-light btn-sm w-100 w-md-auto" title="Admin question dashboard">
+                <i class="fas fa-shield-alt me-1"></i>Admin
+            </a>
+            {% endif %}
             <a href="/logout" class="btn btn-outline-light btn-sm w-100 w-md-auto">Logout</a>
         </div>
     </div>
@@ -83,6 +88,44 @@
                     <span class="badge bg-success">Active Member</span>
                 {% else %}
                     <span class="badge bg-danger">Inactive</span>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+
+    <div class="row mt-4">
+        <div class="col-12">
+            <div class="card shadow-sm p-4 mb-4">
+                <h5 class="mb-3">Your Recent Answered Questions</h5>
+                {% if answered_records %}
+                    <div class="table-responsive">
+                        <table class="table table-sm">
+                            <thead>
+                                <tr>
+                                    <th scope="col">Question</th>
+                                    <th scope="col">Status</th>
+                                    <th scope="col">Answered At</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                {% for record in answered_records %}
+                                    <tr>
+                                        <td>{{ record.question.text[:80] }}{% if record.question.text|length > 80 %}...{% endif %}</td>
+                                        <td>
+                                            {% if record.is_correct %}
+                                                <span class="badge bg-success">Correct</span>
+                                            {% else %}
+                                                <span class="badge bg-danger">Incorrect</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>{{ record.answered_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                    </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                {% else %}
+                    <p class="mb-0 text-muted">You haven't answered any questions yet.</p>
                 {% endif %}
             </div>
         </div>
@@ -229,8 +272,9 @@ async function startTrivia() {
     const res = await fetch('/get-question');
     const data = await res.json();
     
-    if(data.status === 'error') {
+    if(data.status === 'error' || data.status === 'already_answered') {
         alert(data.message);
+        return;
     } else {
         currentQuestionId = data.id;
         document.getElementById('qText').innerText = data.question;
@@ -276,6 +320,14 @@ async function submitAns(choice) {
                 <i class="fas fa-trophy text-success mb-3" style="font-size: 3rem;"></i>
                 <p class="fw-bold">Congratulations! Your voucher code is:</p>
                 <p class="fs-5">${data.pin}</p>
+            </div>
+        `);
+    } else if (data.status === "already_answered") {
+        showGameResult("Already Answered", `
+            <div class="text-center">
+                <i class="fas fa-info-circle text-warning mb-3" style="font-size: 3rem;"></i>
+                <p class="fw-bold">${data.message}</p>
+                <p class="small text-muted">Try another question to continue.</p>
             </div>
         `);
     } else {
