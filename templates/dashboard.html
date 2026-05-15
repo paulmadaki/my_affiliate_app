@@ -159,7 +159,7 @@
                         <h5>Your Referral Link</h5>
                         <p class="text-muted small">Earn $0.50 for every friend who joins and activates.</p>
                         <div class="input-group">
-                            <input type="text" id="refLink" class="form-control bg-white" value="{{ request.host_url }}register?ref={{ user.referral_code }}" readonly>
+                            <input type="text" id="refLink" class="form-control bg-white" value="{{ referral_link }}" readonly>
                             <button class="btn btn-primary" onclick="copyLink()">Copy</button>
                         </div>
                     </div>

@@ -6,10 +6,13 @@ from datetime import datetime, date
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'tech-growth-2026-key')
+app.config['PREFERRED_URL_SCHEME'] = 'https'
+app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
 
 # --- DATABASE CONFIGURATION ---
 # FIX 1: Railway provides "postgres://" but SQLAlchemy 1.4+ requires "postgresql://"
@@ -209,12 +212,14 @@ def login():
 def dashboard():
     pins_count = RechargeCard.query.filter_by(is_used=False).count()
     answered_records = AnsweredQuestion.query.filter_by(answered_by_id=current_user.id).join(Question).order_by(AnsweredQuestion.answered_at.desc()).limit(5).all()
+    referral_link = url_for('register', _external=True, ref=current_user.referral_code)
     return render_template(
         'dashboard.html',
         user=current_user,
         pins_count=pins_count,
         admin_email=ADMIN_EMAIL,
-        answered_records=answered_records
+        answered_records=answered_records,
+        referral_link=referral_link
     )
 
 @app.route('/admin/questions')
