@@ -47,6 +47,7 @@ login_manager.login_view = 'login'
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
+    full_name = db.Column(db.String(150), nullable=False)
     email = db.Column(db.String(100), unique=True, nullable=False)
     password = db.Column(db.String(255), nullable=False)
     referral_code = db.Column(db.String(20), unique=True)
@@ -141,13 +142,14 @@ def index():
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
+        full_name = request.form.get('full_name')
         email = request.form.get('email')
         password = request.form.get('password')
         referred_by = request.form.get('ref')
         whatsapp_number = request.form.get('whatsapp_number')
         location = request.form.get('location')
 
-        if not email or not password or not whatsapp_number or not location:
+        if not full_name or not email or not password or not whatsapp_number or not location:
             flash("Please fill in all required fields.")
             return redirect(url_for('register'))
 
@@ -165,6 +167,7 @@ def register():
             return redirect(url_for('register'))
 
         new_user = User(
+            full_name=full_name,
             email=email,
             password=generate_password_hash(password, method='pbkdf2:sha256'),
             referral_code=uuid.uuid4().hex[:8],
@@ -221,6 +224,12 @@ def dashboard():
         answered_records=answered_records,
         referral_link=referral_link
     )
+
+
+@app.route('/profile')
+@login_required
+def profile():
+    return render_template('profile.html', user=current_user)
 
 @app.route('/admin/questions')
 @login_required

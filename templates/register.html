@@ -64,6 +64,13 @@
 
                 <form action="/register" method="POST" onsubmit="return validateRegistration()">
                     <div class="mb-3">
+                        <label class="form-label fw-bold">Full Name</label>
+                        <div class="input-group">
+                            <span class="input-group-text bg-white"><i class="fas fa-user text-muted"></i></span>
+                            <input type="text" name="full_name" id="registerFullName" class="form-control border-start-0" placeholder="Your full name" required>
+                        </div>
+                    </div>
+                    <div class="mb-3">
                         <label class="form-label fw-bold">Email Address</label>
                         <div class="input-group">
                             <span class="input-group-text bg-white"><i class="fas fa-envelope text-muted"></i></span>
@@ -199,6 +206,12 @@ function validateRegistration() {
 
     if (!location || location.length < 5) {
         alert('Please enter your location in the format Country/State/City.');
+        return false;
+    }
+
+    const fullName = document.getElementById('registerFullName').value.trim();
+    if (!fullName || fullName.length < 2) {
+        alert('Please enter your full name.');
         return false;
     }
 
