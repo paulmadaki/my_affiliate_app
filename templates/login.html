@@ -59,6 +59,7 @@
                     {% endwith %}
 
                     <form action="/login" method="POST">
+                        {{ csrf_token() }}
                         <div class="mb-3">
                             <label class="form-label">Email Address</label>
                             <input type="email" name="email" class="form-control" placeholder="example@gmail.com" required autofocus>

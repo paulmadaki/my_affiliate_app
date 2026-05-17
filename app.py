@@ -1,18 +1,36 @@
+import logging
 import os
+import re
 import uuid
 import requests
 import random
 from datetime import datetime, date
-from flask import Flask, render_template, request, redirect, url_for, jsonify, flash
+from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, abort
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
+from flask_wtf import CSRFProtect
+from flask_migrate import Migrate
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
 
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s %(name)s %(message)s'
+)
+logger = logging.getLogger(__name__)
+
 app = Flask(__name__)
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'tech-growth-2026-key')
+secret_key = os.getenv('SECRET_KEY')
+if not secret_key:
+    raise RuntimeError('SECRET_KEY environment variable must be set for production.')
+app.config['SECRET_KEY'] = secret_key
 app.config['PREFERRED_URL_SCHEME'] = 'https'
-app.wsgi_app = ProxyFix(app.wsgi_app, x_proto=1, x_host=1)
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+app.config['REMEMBER_COOKIE_SECURE'] = True
+app.config['WTF_CSRF_TIME_LIMIT'] = 3600
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 
 # --- DATABASE CONFIGURATION ---
 # FIX 1: Railway provides "postgres://" but SQLAlchemy 1.4+ requires "postgresql://"
@@ -40,8 +58,11 @@ app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
 }
 
 db = SQLAlchemy(app)
+migrate = Migrate(app, db)
+csrf = CSRFProtect(app)
 login_manager = LoginManager(app)
 login_manager.login_view = 'login'
+login_manager.session_protection = 'strong'
 
 # --- DATABASE MODELS ---
 
@@ -108,12 +129,31 @@ class AnsweredQuestion(db.Model):
     question = db.relationship('Question', backref=db.backref('answer_records', lazy=True))
     answered_by = db.relationship('User', foreign_keys=[answered_by_id])
 
+EMAIL_REGEX = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
+PHONE_REGEX = re.compile(r'^\+?[0-9]{7,15}$')
+
+
+def is_valid_email(email: str) -> bool:
+    return bool(email and EMAIL_REGEX.match(email))
+
+
+def is_valid_phone(phone: str) -> bool:
+    return bool(phone and PHONE_REGEX.match(phone.strip()))
+
+
+def generate_referral_code() -> str:
+    while True:
+        code = uuid.uuid4().hex[:8]
+        if not User.query.filter_by(referral_code=code).first():
+            return code
+
 # --- INITIALIZE DATABASE ---
 # FIX 3: Wrap in a function so it's safe with Gunicorn multi-worker startup
 def init_db():
-    with app.app_context():
-        db.create_all()
-        print("✅ Database tables created/verified.")
+    if os.getenv('FLASK_ENV', 'production').lower() != 'production':
+        with app.app_context():
+            db.create_all()
+            logger.info('✅ Database tables created/verified.')
 
 init_db()
 
@@ -126,12 +166,31 @@ def load_user(user_id):
 PAYSTACK_SECRET = os.getenv('PAYSTACK_SECRET')
 ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@example.com')
 
+if not PAYSTACK_SECRET:
+    logger.warning('PAYSTACK_SECRET is not set. Paystack payments will be unavailable.')
+
+
 def get_naira_rate():
     try:
-        res = requests.get("https://api.exchangerate-api.com/v6/latest/USD", timeout=5)
-        return res.json()['conversion_rates']['NGN']
-    except Exception:
-        return 1500  # Fallback
+        res = requests.get('https://api.exchangerate-api.com/v6/latest/USD', timeout=5)
+        res.raise_for_status()
+        payload = res.json()
+        rate = payload.get('conversion_rates', {}).get('NGN')
+        if rate:
+            return rate
+        logger.warning('Exchange rate response missing NGN: %s', payload)
+    except Exception as exc:
+        logger.warning('Failed to fetch exchange rate: %s', exc)
+    return 1500  # Fallback
+
+
+@app.after_request
+def set_security_headers(response):
+    response.headers['X-Frame-Options'] = 'DENY'
+    response.headers['X-Content-Type-Options'] = 'nosniff'
+    response.headers['Referrer-Policy'] = 'strict-origin-when-cross-origin'
+    response.headers['Permissions-Policy'] = 'interest-cohort=()'
+    return response
 
 # --- ROUTES ---
 
@@ -142,35 +201,49 @@ def index():
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        full_name = request.form.get('full_name')
-        email = request.form.get('email')
-        password = request.form.get('password')
-        referred_by = request.form.get('ref')
-        whatsapp_number = request.form.get('whatsapp_number')
-        location = request.form.get('location')
+        full_name = request.form.get('full_name', '').strip()
+        email = request.form.get('email', '').strip().lower()
+        password = request.form.get('password', '')
+        referred_by = request.form.get('ref', '').strip()
+        whatsapp_number = request.form.get('whatsapp_number', '').strip()
+        location = request.form.get('location', '').strip()
 
         if not full_name or not email or not password or not whatsapp_number or not location:
-            flash("Please fill in all required fields.")
+            flash('Please fill in all required fields.')
+            return redirect(url_for('register'))
+
+        if len(full_name) < 3:
+            flash('Please enter your full name.')
             return redirect(url_for('register'))
 
         if len(password) < 6:
-            flash("Password must be at least 6 characters.")
+            flash('Password must be at least 6 characters.')
+            return redirect(url_for('register'))
+
+        if not is_valid_email(email):
+            flash('Please enter a valid email address.')
             return redirect(url_for('register'))
 
         if User.query.filter_by(email=email).first():
-            flash("Email already exists!")
+            flash('Email already exists!')
             return redirect(url_for('register'))
 
-        # Validate WhatsApp number (basic validation)
-        if not whatsapp_number.replace('+', '').isdigit():
-            flash("Invalid WhatsApp number format!")
+        if not is_valid_phone(whatsapp_number):
+            flash('Invalid WhatsApp number format.')
             return redirect(url_for('register'))
+
+        if len(location) < 5:
+            flash('Please enter your location in the format Country/State/City.')
+            return redirect(url_for('register'))
+
+        if referred_by and not User.query.filter_by(referral_code=referred_by).first():
+            referred_by = None
 
         new_user = User(
             full_name=full_name,
             email=email,
             password=generate_password_hash(password, method='pbkdf2:sha256'),
-            referral_code=uuid.uuid4().hex[:8],
+            referral_code=generate_referral_code(),
             referred_by=referred_by,
             whatsapp_number=whatsapp_number,
             location=location
@@ -178,7 +251,6 @@ def register():
         db.session.add(new_user)
         db.session.commit()
         
-        # Track referral if applicable
         if referred_by:
             referrer = User.query.filter_by(referral_code=referred_by).first()
             if referrer:
@@ -189,7 +261,7 @@ def register():
                 )
                 db.session.add(referral_rec)
                 db.session.commit()
-        
+
         login_user(new_user)
         return redirect(url_for('dashboard'))
 
@@ -200,13 +272,18 @@ def register():
 @app.route('/login', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        email = request.form.get('email')
-        password = request.form.get('password')
-        user = User.query.filter_by(email=email).first()
+        email = request.form.get('email', '').strip().lower()
+        password = request.form.get('password', '')
 
+        if not email or not password:
+            flash('Email and password are required.')
+            return redirect(url_for('login'))
+
+        user = User.query.filter_by(email=email).first()
         if user and check_password_hash(user.password, password):
             login_user(user)
             return redirect(url_for('dashboard'))
+
         flash('Invalid login details.')
     return render_template('login.html')
 
@@ -254,39 +331,72 @@ def admin_questions():
 @app.route('/pay')
 @login_required
 def pay():
+    if not PAYSTACK_SECRET:
+        flash('Payment configuration is missing. Please contact support.')
+        return redirect(url_for('dashboard'))
+
     rate = get_naira_rate()
     amount_kobo = int(2 * rate * 100)
-    headers = {"Authorization": f"Bearer {PAYSTACK_SECRET}"}
+    headers = {'Authorization': f'Bearer {PAYSTACK_SECRET}'}
     data = {
-        "email": current_user.email,
-        "amount": amount_kobo,
-        "callback_url": url_for('verify_payment', _external=True)
+        'email': current_user.email,
+        'amount': amount_kobo,
+        'callback_url': url_for('verify_payment', _external=True)
     }
-    r = requests.post("https://api.paystack.co/transaction/initialize", headers=headers, json=data)
-    return redirect(r.json()['data']['authorization_url'])
+
+    try:
+        r = requests.post('https://api.paystack.co/transaction/initialize', headers=headers, json=data, timeout=10)
+        r.raise_for_status()
+        payload = r.json()
+        authorization_url = payload.get('data', {}).get('authorization_url')
+        if not authorization_url:
+            raise ValueError('Missing Paystack authorization URL')
+        return redirect(authorization_url)
+    except Exception as exc:
+        logger.exception('Paystack payment initialization failed: %s', exc)
+        flash('Unable to start payment at this time. Please try again later.')
+        return redirect(url_for('dashboard'))
 
 @app.route('/verify')
 @login_required
 def verify_payment():
-    ref = request.args.get('reference')
-    headers = {"Authorization": f"Bearer {PAYSTACK_SECRET}"}
-    r = requests.get(f"https://api.paystack.co/transaction/verify/{ref}", headers=headers)
-    res = r.json()
+    reference = request.args.get('reference')
+    if not reference:
+        flash('Missing payment reference.')
+        return redirect(url_for('dashboard'))
 
-    if res['status'] and res['data']['status'] == 'success':
+    if not PAYSTACK_SECRET:
+        flash('Payment configuration is missing. Please contact support.')
+        return redirect(url_for('dashboard'))
+
+    headers = {'Authorization': f'Bearer {PAYSTACK_SECRET}'}
+    try:
+        r = requests.get(f'https://api.paystack.co/transaction/verify/{reference}', headers=headers, timeout=10)
+        r.raise_for_status()
+        res = r.json()
+    except Exception as exc:
+        logger.exception('Paystack verification failed: %s', exc)
+        flash('Unable to verify payment at this time.')
+        return redirect(url_for('dashboard'))
+
+    data = res.get('data', {})
+    if res.get('status') and data.get('status') == 'success':
         current_user.is_active_member = True
         if current_user.referred_by:
             referrer = User.query.filter_by(referral_code=current_user.referred_by).first()
             if referrer:
                 referrer.balance_usd += 0.50
-                # Update referral history status
                 referral_rec = ReferralHistory.query.filter_by(
                     referred_user_id=current_user.id
                 ).first()
                 if referral_rec:
                     referral_rec.status = 'Active'
         db.session.commit()
-        flash("Account Activated!")
+        flash('Account Activated!')
+    else:
+        logger.warning('Paystack verification returned unsuccessful response: %s', res)
+        flash('Payment was not successful. Please try again.')
+
     return redirect(url_for('dashboard'))
 
 # --- TRIVIA ENGINE ---
@@ -386,44 +496,48 @@ def check_answer():
 @login_required
 def request_payout():
     amount_requested = 5.0  # Fixed minimum
-    
+
+    bank_name = request.form.get('bank_name', '').strip()
+    account_number = request.form.get('account_number', '').strip()
+    account_name = request.form.get('account_name', '').strip()
+
+    if not bank_name or not account_number or not account_name:
+        return jsonify({'status': 'error', 'message': 'Please provide bank name, account number, and account name.'})
+
     if current_user.balance_usd < amount_requested:
-        return jsonify({"status": "error", "message": "Minimum $5 required"})
-    
-    # Check for pending withdrawals (prevent duplicates)
+        return jsonify({'status': 'error', 'message': 'Minimum $5 required'})
+
     pending_payout = PayoutRequest.query.filter_by(
         user_id=current_user.id,
         status='Pending'
     ).first()
-    
+
     if pending_payout:
-        return jsonify({"status": "error", "message": "You have a pending withdrawal. Please wait for it to be processed."})
-    
-    # Calculate 10% deduction
+        return jsonify({'status': 'error', 'message': 'You have a pending withdrawal. Please wait for it to be processed.'})
+
     deduction_fee = amount_requested * 0.10
     net_amount = amount_requested - deduction_fee
-    
-    # Create payout request
+
     new_payout = PayoutRequest(
         user_id=current_user.id,
         amount_usd=amount_requested,
         deduction_fee_usd=deduction_fee,
         net_amount_usd=net_amount,
-        bank_name=request.form.get('bank_name'),
-        account_number=request.form.get('account_number'),
-        account_name=request.form.get('account_name')
+        bank_name=bank_name,
+        account_number=account_number,
+        account_name=account_name
     )
     current_user.balance_usd -= amount_requested
     db.session.add(new_payout)
     db.session.commit()
-    
+
     return jsonify({
-        "status": "success",
-        "message": "Withdrawal request submitted!",
-        "details": {
-            "original_amount": amount_requested,
-            "deduction_fee": round(deduction_fee, 2),
-            "net_amount": round(net_amount, 2)
+        'status': 'success',
+        'message': 'Withdrawal request submitted!',
+        'details': {
+            'original_amount': amount_requested,
+            'deduction_fee': round(deduction_fee, 2),
+            'net_amount': round(net_amount, 2)
         }
     })
 
