@@ -5,6 +5,7 @@ import uuid
 import requests
 import random
 from datetime import datetime, date
+from dotenv import load_dotenv
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, abort
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
@@ -19,6 +20,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+load_dotenv()
 app = Flask(__name__)
 secret_key = os.getenv('SECRET_KEY')
 if not secret_key:
