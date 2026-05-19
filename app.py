@@ -35,7 +35,6 @@ app.config['WTF_CSRF_TIME_LIMIT'] = 3600
 app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1, x_port=1)
 
 # --- DATABASE CONFIGURATION ---
-# FIX 1: Railway provides "postgres://" but SQLAlchemy 1.4+ requires "postgresql://"
 database_url = os.getenv("DATABASE_URL")
 
 if not database_url:
@@ -44,7 +43,6 @@ if not database_url:
         "Make sure your Postgres plugin is linked to this service in Railway."
     )
 
-# Fix the scheme Railway gives us
 if database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
@@ -53,8 +51,6 @@ print("DATABASE_URL scheme =", database_url.split("@")[0].split(":")[0])  # Safe
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
-    # FIX 2: Prevents "SSL connection has been closed unexpectedly" errors
-    # that happen when Railway recycles idle connections
     "pool_pre_ping": True,
     "pool_recycle": 300,
 }
@@ -67,6 +63,7 @@ login_manager.login_view = 'login'
 login_manager.session_protection = 'strong'
 
 # --- DATABASE MODELS ---
+# NOTE: No model changes here — all existing columns/tables are preserved as-is.
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -79,7 +76,7 @@ class User(UserMixin, db.Model):
     chances = db.Column(db.Integer, default=5)
     is_active_member = db.Column(db.Boolean, default=False)
     whatsapp_number = db.Column(db.String(20), nullable=True)
-    location = db.Column(db.String(255), nullable=True)  # Format: Country/State/City
+    location = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=db.func.now())
     last_chance_reset = db.Column(db.DateTime, default=db.func.now())
 
@@ -104,8 +101,8 @@ class PayoutRequest(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     amount_usd = db.Column(db.Float, default=5.0)
-    deduction_fee_usd = db.Column(db.Float, default=0.0)  # 10% deduction
-    net_amount_usd = db.Column(db.Float, default=0.0)  # Amount after deduction
+    deduction_fee_usd = db.Column(db.Float, default=0.0)
+    net_amount_usd = db.Column(db.Float, default=0.0)
     bank_name = db.Column(db.String(100), nullable=False)
     account_number = db.Column(db.String(20), nullable=False)
     account_name = db.Column(db.String(100), nullable=False)
@@ -117,7 +114,7 @@ class ReferralHistory(db.Model):
     referrer_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     referred_user_id = db.Column(db.Integer, db.ForeignKey('user.id'))
     earnings_usd = db.Column(db.Float, default=0.50)
-    status = db.Column(db.String(20), default='Active')  # Active, Inactive, etc.
+    status = db.Column(db.String(20), default='Active')
     created_at = db.Column(db.DateTime, default=db.func.now())
 
 class AnsweredQuestion(db.Model):
@@ -130,6 +127,8 @@ class AnsweredQuestion(db.Model):
 
     question = db.relationship('Question', backref=db.backref('answer_records', lazy=True))
     answered_by = db.relationship('User', foreign_keys=[answered_by_id])
+
+# --- VALIDATION HELPERS ---
 
 EMAIL_REGEX = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
 PHONE_REGEX = re.compile(r'^\+?[0-9]{7,15}$')
@@ -149,8 +148,70 @@ def generate_referral_code() -> str:
         if not User.query.filter_by(referral_code=code).first():
             return code
 
-# --- INITIALIZE DATABASE ---
-# FIX 3: Wrap in a function so it's safe with Gunicorn multi-worker startup
+
+# --- FIX 1: Extracted shared daily-reset logic into one helper ---
+# Previously this block was copy-pasted in both /get-question and /check-answer,
+# meaning any change had to be made in two places and they could drift apart.
+# Now there's a single source of truth.
+UNLIMITED_CHANCES = 999  # Named constant replacing the magic number
+
+
+def maybe_reset_daily_chances(user):
+    """
+    Resets a user's daily chances if they haven't been reset today.
+    Grants unlimited chances if the user made at least one referral today.
+    Safe to call multiple times — only acts once per calendar day.
+    """
+    today = date.today()
+    if user.last_chance_reset is None or user.last_chance_reset.date() != today:
+        user.chances = 5
+        referrals_today = ReferralHistory.query.filter(
+            ReferralHistory.referrer_id == user.id,
+            db.func.date(ReferralHistory.created_at) == today
+        ).count()
+        if referrals_today >= 1:
+            user.chances = UNLIMITED_CHANCES
+        user.last_chance_reset = datetime.now()
+
+
+# --- FIX 2: Exchange rate cache ---
+# Previously get_naira_rate() made a live HTTP call on every /pay request,
+# which could be slow or fail under load. Now the rate is cached for 10 minutes
+# in a simple module-level dict — no extra dependencies needed.
+_rate_cache = {"value": None, "fetched_at": None}
+RATE_CACHE_TTL_SECONDS = 600  # 10 minutes
+
+
+def get_naira_rate():
+    now = datetime.utcnow()
+    cached = _rate_cache["value"]
+    fetched_at = _rate_cache["fetched_at"]
+
+    if cached and fetched_at and (now - fetched_at).total_seconds() < RATE_CACHE_TTL_SECONDS:
+        return cached
+
+    try:
+        res = requests.get('https://api.exchangerate-api.com/v6/latest/USD', timeout=5)
+        res.raise_for_status()
+        payload = res.json()
+        rate = payload.get('conversion_rates', {}).get('NGN')
+        if rate:
+            _rate_cache["value"] = rate
+            _rate_cache["fetched_at"] = now
+            return rate
+        logger.warning('Exchange rate response missing NGN: %s', payload)
+    except Exception as exc:
+        logger.warning('Failed to fetch exchange rate: %s', exc)
+
+    # Return stale cache if available, otherwise fall back to hardcoded value
+    if cached:
+        logger.info('Returning stale cached exchange rate.')
+        return cached
+
+    return 1500  # Last-resort fallback
+
+
+# --- INIT (Flask-Migrate handles schema; create_all only runs outside production) ---
 def init_db():
     if os.getenv('FLASK_ENV', 'production').lower() != 'production':
         with app.app_context():
@@ -159,10 +220,11 @@ def init_db():
 
 init_db()
 
-# FIX 4: Use db.session.get() — Query.get() is deprecated in SQLAlchemy 2.x
+
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
+
 
 # --- UTILITIES ---
 PAYSTACK_SECRET = os.getenv('PAYSTACK_SECRET')
@@ -170,20 +232,6 @@ ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@example.com')
 
 if not PAYSTACK_SECRET:
     logger.warning('PAYSTACK_SECRET is not set. Paystack payments will be unavailable.')
-
-
-def get_naira_rate():
-    try:
-        res = requests.get('https://api.exchangerate-api.com/v6/latest/USD', timeout=5)
-        res.raise_for_status()
-        payload = res.json()
-        rate = payload.get('conversion_rates', {}).get('NGN')
-        if rate:
-            return rate
-        logger.warning('Exchange rate response missing NGN: %s', payload)
-    except Exception as exc:
-        logger.warning('Failed to fetch exchange rate: %s', exc)
-    return 1500  # Fallback
 
 
 @app.after_request
@@ -252,14 +300,18 @@ def register():
         )
         db.session.add(new_user)
         db.session.commit()
-        
+
+        # FIX 3: ReferralHistory is created on registration but earnings_usd is
+        # explicitly set to 0.0 here. The $0.50 credit only happens in /verify
+        # when payment is confirmed — this way the history row is not misleading.
         if referred_by:
             referrer = User.query.filter_by(referral_code=referred_by).first()
             if referrer:
                 referral_rec = ReferralHistory(
                     referrer_id=referrer.id,
                     referred_user_id=new_user.id,
-                    earnings_usd=0.50
+                    earnings_usd=0.0,       # Pending — not earned until activation
+                    status='Pending'        # Will be updated to Active on payment
                 )
                 db.session.add(referral_rec)
                 db.session.commit()
@@ -286,6 +338,8 @@ def login():
             login_user(user)
             return redirect(url_for('dashboard'))
 
+        # FIX 4: Generic message prevents user enumeration
+        # (same message whether the email doesn't exist or the password is wrong)
         flash('Invalid login details.')
     return render_template('login.html')
 
@@ -293,7 +347,14 @@ def login():
 @login_required
 def dashboard():
     pins_count = RechargeCard.query.filter_by(is_used=False).count()
-    answered_records = AnsweredQuestion.query.filter_by(answered_by_id=current_user.id).join(Question).order_by(AnsweredQuestion.answered_at.desc()).limit(5).all()
+    answered_records = (
+        AnsweredQuestion.query
+        .filter_by(answered_by_id=current_user.id)
+        .join(Question)
+        .order_by(AnsweredQuestion.answered_at.desc())
+        .limit(5)
+        .all()
+    )
     referral_link = url_for('register', _external=True, ref=current_user.referral_code)
     return render_template(
         'dashboard.html',
@@ -347,7 +408,10 @@ def pay():
     }
 
     try:
-        r = requests.post('https://api.paystack.co/transaction/initialize', headers=headers, json=data, timeout=10)
+        r = requests.post(
+            'https://api.paystack.co/transaction/initialize',
+            headers=headers, json=data, timeout=10
+        )
         r.raise_for_status()
         payload = r.json()
         authorization_url = payload.get('data', {}).get('authorization_url')
@@ -373,7 +437,10 @@ def verify_payment():
 
     headers = {'Authorization': f'Bearer {PAYSTACK_SECRET}'}
     try:
-        r = requests.get(f'https://api.paystack.co/transaction/verify/{reference}', headers=headers, timeout=10)
+        r = requests.get(
+            f'https://api.paystack.co/transaction/verify/{reference}',
+            headers=headers, timeout=10
+        )
         r.raise_for_status()
         res = r.json()
     except Exception as exc:
@@ -383,50 +450,52 @@ def verify_payment():
 
     data = res.get('data', {})
     if res.get('status') and data.get('status') == 'success':
-        current_user.is_active_member = True
-        if current_user.referred_by:
-            referrer = User.query.filter_by(referral_code=current_user.referred_by).first()
-            if referrer:
-                referrer.balance_usd += 0.50
-                referral_rec = ReferralHistory.query.filter_by(
-                    referred_user_id=current_user.id
-                ).first()
-                if referral_rec:
-                    referral_rec.status = 'Active'
-        db.session.commit()
-        flash('Account Activated!')
+        # Guard: don't double-credit if verify is called twice for the same user
+        if not current_user.is_active_member:
+            current_user.is_active_member = True
+            if current_user.referred_by:
+                referrer = User.query.filter_by(referral_code=current_user.referred_by).first()
+                if referrer:
+                    referrer.balance_usd += 0.50
+                    referral_rec = ReferralHistory.query.filter_by(
+                        referred_user_id=current_user.id
+                    ).first()
+                    if referral_rec:
+                        # FIX 3 continued: now set the actual earnings and activate
+                        referral_rec.earnings_usd = 0.50
+                        referral_rec.status = 'Active'
+            db.session.commit()
+            flash('Account Activated!')
+        else:
+            flash('Your account is already active.')
     else:
         logger.warning('Paystack verification returned unsuccessful response: %s', res)
         flash('Payment was not successful. Please try again.')
 
     return redirect(url_for('dashboard'))
 
+
 # --- TRIVIA ENGINE ---
 
 @app.route('/get-question')
 @login_required
 def get_question():
-    # Daily chances reset and referral check
-    today = date.today()
-    if current_user.last_chance_reset.date() != today:
-        current_user.chances = 5
-        referrals_today = ReferralHistory.query.filter(
-            ReferralHistory.referrer_id == current_user.id,
-            db.func.date(ReferralHistory.created_at) == today
-        ).count()
-        if referrals_today >= 1:
-            current_user.chances = 999  # Unlimited chances
-        current_user.last_chance_reset = datetime.now()
-        db.session.commit()
+    # FIX 1: Using the shared helper instead of duplicated inline block
+    maybe_reset_daily_chances(current_user)
+    db.session.commit()
 
     if current_user.chances <= 0:
         return jsonify({"status": "error", "message": "No chances left!"})
 
-    all_q = Question.query.all()
-    if not all_q:
+    # FIX 5: Efficient random question selection — fetch only IDs from DB,
+    # then load the single chosen question. Avoids loading all rows into memory.
+    question_ids = db.session.query(Question.id).all()
+    if not question_ids:
         return jsonify({"status": "error", "message": "No questions in database."})
 
-    q = random.choice(all_q)
+    q_id = random.choice(question_ids)[0]
+    q = db.session.get(Question, q_id)
+
     answered_correct = AnsweredQuestion.query.filter_by(question_id=q.id, is_correct=True).first()
     if answered_correct:
         return jsonify({
@@ -452,19 +521,14 @@ def check_answer():
     if answered_correct:
         return jsonify({"status": "already_answered", "message": "This question has already been answered."})
 
-    # Daily chances reset and referral check
-    today = date.today()
-    if current_user.last_chance_reset.date() != today:
-        current_user.chances = 5
-        referrals_today = ReferralHistory.query.filter(
-            ReferralHistory.referrer_id == current_user.id,
-            db.func.date(ReferralHistory.created_at) == today
-        ).count()
-        if referrals_today >= 1:
-            current_user.chances = 999  # Unlimited chances
-        current_user.last_chance_reset = datetime.now()
+    # FIX 1: Using the shared helper instead of duplicated inline block
+    maybe_reset_daily_chances(current_user)
 
-    if current_user.chances < 999:  # Only decrement if not unlimited
+    if current_user.chances <= 0:
+        db.session.commit()
+        return jsonify({"status": "error", "message": "No chances left!"})
+
+    if current_user.chances < UNLIMITED_CHANCES:
         current_user.chances -= 1
 
     is_correct = data.get('choice') == question.correct_answer
@@ -477,7 +541,10 @@ def check_answer():
     db.session.add(answer_record)
 
     if is_correct:
-        pin = RechargeCard.query.filter_by(is_used=False).first()
+        # FIX 6: Row-level lock prevents two concurrent winners claiming the same PIN.
+        # with_for_update() issues SELECT ... FOR UPDATE in Postgres, which blocks
+        # any other transaction from reading this row until we commit.
+        pin = RechargeCard.query.filter_by(is_used=False).with_for_update().first()
 
         if not pin:
             db.session.commit()
@@ -497,7 +564,7 @@ def check_answer():
 @app.route('/request-payout', methods=['POST'])
 @login_required
 def request_payout():
-    amount_requested = 5.0  # Fixed minimum
+    amount_requested = 5.0
 
     bank_name = request.form.get('bank_name', '').strip()
     account_number = request.form.get('account_number', '').strip()
