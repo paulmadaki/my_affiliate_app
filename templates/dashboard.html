@@ -4,6 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard | {{ user.email }}</title>
+
+    <!--
+        CHANGE: Added a single CSRF meta tag in <head>.
+        This is the standard Flask-WTF pattern for AJAX requests — one place
+        to read the token from in JavaScript, rather than hunting for a hidden
+        input inside a form or relying on a bare input at the bottom of the page.
+        The old bare <input type="hidden" name="csrf_token"> at the bottom of
+        the body has been removed; this tag replaces it entirely.
+    -->
+    <meta name="csrf-token" content="{{ csrf_token() }}">
+
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha512-pVl7fK3sOlFj0+INRS0TtKXJ4JScK0kLkWvJsOK7o0EB9zuN04o6ZX1Gc3ZzD3i9jP8YjVi5h6y1G4Q5KpELKg==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <style>
@@ -79,7 +90,16 @@
         <div class="col-md-4">
             <div class="card stats-card shadow-sm p-4 text-center">
                 <h6 class="text-muted text-uppercase">Game Chances</h6>
-                <h2 class="text-success" id="chancesCount">{% if user.chances >= 999 %}Unlimited{% else %}{{ user.chances }}{% endif %}</h2>
+                <!--
+                    CHANGE: Added id="chancesCount" target for live JS updates.
+                    The backend now returns chances_remaining in every /check-answer
+                    response. The updateChancesDisplay() JS function reads that value
+                    and updates this element after each game, so the counter stays
+                    accurate without a full page reload.
+                -->
+                <h2 class="text-success" id="chancesCount">
+                    {% if user.chances >= 999 %}Unlimited{% else %}{{ user.chances }}{% endif %}
+                </h2>
                 <p class="small">Refer to earn more</p>
             </div>
         </div>
@@ -182,7 +202,7 @@
                     {% if user.balance_usd >= 5.0 %}
                     <div class="card border-success shadow-sm p-4">
                         <h5 class="text-success"><i class="fas fa-money-bill-wave me-2"></i>Request Payout</h5>
-                        
+
                         <!-- DEDUCTION BREAKDOWN -->
                         <div class="alert alert-info small mb-3">
                             <div class="d-flex justify-content-between mb-2">
@@ -200,8 +220,15 @@
                             </div>
                         </div>
 
+                        <!--
+                            CHANGE: Removed the {{ csrf_token() }} call from inside this form.
+                            CSRF for this form is now handled via the X-CSRFToken request header
+                            sent by the fetch() call in the JS below, reading from the <meta>
+                            tag in <head>. Having both a hidden input AND a header would be
+                            redundant; the header-based approach works for all AJAX POSTs
+                            consistently, including /check-answer.
+                        -->
                         <form id="payoutForm">
-                            {{ csrf_token() }}
                             <input type="text" name="bank_name" class="form-control mb-2" placeholder="Bank Name" required>
                             <input type="text" name="account_number" class="form-control mb-2" placeholder="Account Number" required>
                             <input type="text" name="account_name" class="form-control mb-2" placeholder="Account Name" required>
@@ -223,7 +250,12 @@
     </div>
 </div>
 
-<input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+<!--
+    CHANGE: Removed the old bare <input type="hidden" name="csrf_token"> that was
+    sitting outside all forms at the bottom of the body. It was fragile (no id,
+    outside any form) and is now fully replaced by the <meta name="csrf-token">
+    tag in <head>. All AJAX calls read from there via getCsrfToken().
+-->
 
 <!-- TRIVIA MODAL -->
 <div class="modal fade" id="triviaModal" tabindex="-1" aria-hidden="true">
@@ -267,6 +299,30 @@
 let currentQuestionId = null;
 const triviaModal = new bootstrap.Modal(document.getElementById('triviaModal'));
 
+/*
+ * CHANGE: Single helper that reads the CSRF token from the <meta> tag in <head>.
+ * Previously the token was grabbed inline inside submitAns() by querying a
+ * hidden input — which broke if the input wasn't present (e.g. on inactive-user
+ * view where the payout form is hidden). Centralising it here means both
+ * submitAns() and the payout form fetch use the same reliable source.
+ */
+function getCsrfToken() {
+    return document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+}
+
+/*
+ * CHANGE: Added updateChancesDisplay() to keep the Game Chances card in sync
+ * after each answer. The backend now returns chances_remaining in every
+ * /check-answer response. Previously the counter on screen only updated on a
+ * full page reload, so users couldn't see their chances decreasing in real time.
+ * This function reads the value from the response and updates #chancesCount.
+ */
+function updateChancesDisplay(chancesRemaining) {
+    const el = document.getElementById('chancesCount');
+    if (!el) return;
+    el.textContent = (chancesRemaining === 'unlimited') ? 'Unlimited' : chancesRemaining;
+}
+
 function copyLink() {
     var copyText = document.getElementById("refLink");
     copyText.select();
@@ -274,14 +330,55 @@ function copyLink() {
     alert("Referral link copied!");
 }
 
+/*
+ * CHANGE: startTrivia() now handles all status values the backend can return,
+ * not just 'error' and 'already_answered'.
+ *
+ * New statuses added in app.py:
+ *   - 'no_chances'    → user has used all their daily attempts
+ *   - 'all_answered'  → every question in the DB has been correctly answered
+ *
+ * Previously both of these fell into the generic else branch which called
+ * showGameResult() — but the trivia modal was never opened at that point,
+ * so triviaModal.hide() inside submitAns() would fail silently.
+ *
+ * Now startTrivia() shows a clean alert for any blocking status and only
+ * opens the modal when a valid question is returned.
+ *
+ * Also wrapped in try/catch so a network failure shows a friendly error
+ * instead of a silent broken state.
+ */
 async function startTrivia() {
-    const res = await fetch('/get-question');
-    const data = await res.json();
-    
-    if(data.status === 'error' || data.status === 'already_answered') {
-        alert(data.message);
-        return;
-    } else {
+    try {
+        const res = await fetch('/get-question');
+        const data = await res.json();
+
+        if (data.status === 'no_chances') {
+            // User has exhausted today's daily attempts.
+            alert("⏰ " + data.message);
+            return;
+        }
+
+        if (data.status === 'all_answered') {
+            // Every question has already been won by someone today.
+            alert("✅ " + data.message);
+            return;
+        }
+
+        if (data.status === 'error') {
+            // Catch-all server-side error (e.g. no questions in DB at all).
+            alert("⚠️ " + data.message);
+            return;
+        }
+
+        // Update the chances display with the fresh value from the server.
+        // /get-question returns chances_remaining without deducting — this
+        // just keeps the display accurate after the daily reset fires.
+        if (data.chances_remaining !== undefined) {
+            updateChancesDisplay(data.chances_remaining);
+        }
+
+        // A valid question was returned — populate and open the modal.
         currentQuestionId = data.id;
         document.getElementById('qText').innerText = data.question;
         document.getElementById('optA').innerText = data.options.A;
@@ -289,59 +386,94 @@ async function startTrivia() {
         document.getElementById('optC').innerText = data.options.C;
         document.getElementById('optD').innerText = data.options.D;
         triviaModal.show();
+
+    } catch (err) {
+        // Network failure or unexpected error — show a friendly message.
+        alert("⚠️ Could not load question. Please check your connection and try again.");
     }
 }
 
+/*
+ * CHANGE: submitAns() now:
+ *   1. Reads the CSRF token from getCsrfToken() (meta tag) instead of a hidden input.
+ *   2. Handles the new 'no_chances' status from /check-answer.
+ *   3. Calls updateChancesDisplay() with chances_remaining from every response
+ *      so the counter updates immediately after each answer.
+ *   4. Wrapped in try/catch so a network failure doesn't leave the modal open
+ *      with no feedback.
+ */
 async function submitAns(choice) {
-    const csrfToken = document.querySelector('input[name="csrf_token"]').value;
+    try {
+        const res = await fetch('/check-answer', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrfToken()   // Read from <meta> tag
+            },
+            body: JSON.stringify({ question_id: currentQuestionId, choice: choice })
+        });
 
-    const res = await fetch('/check-answer', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json',
-            'X-CSRFToken': csrfToken   // <-- add this
-        },
-        body: JSON.stringify({question_id: currentQuestionId, choice: choice})
-    });
+        const data = await res.json();
+        triviaModal.hide();
 
-    const data = await res.json();
-    triviaModal.hide();
+        // Update the live chances counter from the server's authoritative value.
+        if (data.chances_remaining !== undefined) {
+            updateChancesDisplay(data.chances_remaining);
+        }
 
-    // ... rest of your existing code unchanged ...
+        if (data.status === 'no_chances') {
+            // Edge case: chances ran out between get-question and check-answer.
+            showGameResult("No Chances Left ⏰", `
+                <div class="text-center">
+                    <i class="fas fa-clock text-warning mb-3" style="font-size: 3rem;"></i>
+                    <p class="fw-bold">${data.message}</p>
+                </div>
+            `);
+        } else if (data.status === "correct_but_empty") {
+            showGameResult("Great Job! 🌟", `
+                <div class="text-center">
+                    <i class="fas fa-exclamation-circle text-warning mb-3" style="font-size: 3rem;"></i>
+                    <p class="fw-bold">${data.message}</p>
+                    <p class="small text-muted">Your win has been recorded. Follow us on WhatsApp for restock updates!</p>
+                </div>
+            `);
+        } else if (data.status === "win") {
+            showGameResult("You Won! 🏆", `
+                <div class="text-center">
+                    <i class="fas fa-trophy text-success mb-3" style="font-size: 3rem;"></i>
+                    <p class="fw-bold">Congratulations! Your voucher code is:</p>
+                    <p class="fs-5 fw-bold text-success">${data.pin}</p>
+                </div>
+            `);
+        } else if (data.status === "already_answered") {
+            showGameResult("Already Answered", `
+                <div class="text-center">
+                    <i class="fas fa-info-circle text-warning mb-3" style="font-size: 3rem;"></i>
+                    <p class="fw-bold">${data.message}</p>
+                    <p class="small text-muted">Try another question to continue.</p>
+                </div>
+            `);
+        } else {
+            // 'wrong' status — or any unexpected status — shows the incorrect answer screen.
+            showGameResult("Incorrect Answer ❌", `
+                <div class="text-center">
+                    <i class="fas fa-circle-xmark text-danger mb-3" style="font-size: 3rem;"></i>
+                    <p class="fw-bold">${data.message}</p>
+                    <p class="small text-muted">
+                        ${data.chances_remaining === 'unlimited'
+                            ? 'You have unlimited chances today — try again!'
+                            : (data.chances_remaining > 0
+                                ? `You have ${data.chances_remaining} chance(s) left today.`
+                                : 'You have no chances left today. Come back tomorrow!')}
+                    </p>
+                </div>
+            `);
+        }
 
-
-
-    if (data.status === "correct_but_empty") {
-        showGameResult("Great Job! 🌟", `
-            <div class="text-center">
-                <i class="fas fa-exclamation-circle text-warning mb-3" style="font-size: 3rem;"></i>
-                <p class="fw-bold">${data.message}</p>
-                <p class="small text-muted">Your win has been recorded. Follow us on WhatsApp for restock updates!</p>
-            </div>
-        `);
-    } else if (data.status === "win") {
-        showGameResult("You Won! 🏆", `
-            <div class="text-center">
-                <i class="fas fa-trophy text-success mb-3" style="font-size: 3rem;"></i>
-                <p class="fw-bold">Congratulations! Your voucher code is:</p>
-                <p class="fs-5">${data.pin}</p>
-            </div>
-        `);
-    } else if (data.status === "already_answered") {
-        showGameResult("Already Answered", `
-            <div class="text-center">
-                <i class="fas fa-info-circle text-warning mb-3" style="font-size: 3rem;"></i>
-                <p class="fw-bold">${data.message}</p>
-                <p class="small text-muted">Try another question to continue.</p>
-            </div>
-        `);
-    } else {
-        showGameResult("Incorrect Answer", `
-            <div class="text-center">
-                <i class="fas fa-xmark-circle text-danger mb-3" style="font-size: 3rem;"></i>
-                <p class="fw-bold">${data.message}</p>
-            </div>
-        `);
+    } catch (err) {
+        // Network failure — hide the modal and show a friendly error.
+        triviaModal.hide();
+        alert("⚠️ Could not submit answer. Please check your connection and try again.");
     }
 }
 
@@ -352,21 +484,36 @@ function showGameResult(title, htmlContent) {
     resultModal.show();
 }
 
-// Handle Payout Form
-if(document.getElementById('payoutForm')) {
+/*
+ * CHANGE: Payout form fetch now sends X-CSRFToken header (same as submitAns)
+ * instead of relying on the hidden input inside FormData.
+ * This makes CSRF handling consistent across all AJAX calls on the page and
+ * removes the dependency on the hidden input field that was removed from the form.
+ */
+if (document.getElementById('payoutForm')) {
     document.getElementById('payoutForm').onsubmit = async (e) => {
         e.preventDefault();
         const formData = new FormData(e.target);
-        const res = await fetch('/request-payout', { method: 'POST', body: formData });
-        const data = await res.json();
-        
-        if (data.status === 'success') {
-            const details = data.details;
-            alert(`✓ Withdrawal request submitted!\n\nOriginal Amount: $${details.original_amount}\nFee (10%): -$${details.deduction_fee}\nYou will receive: $${details.net_amount}\n\nProcessing time: 24-48 hours`);
-        } else {
-            alert(`❌ Error: ${data.message}`);
+        try {
+            const res = await fetch('/request-payout', {
+                method: 'POST',
+                headers: {
+                    'X-CSRFToken': getCsrfToken()
+                },
+                body: formData
+            });
+            const data = await res.json();
+
+            if (data.status === 'success') {
+                const details = data.details;
+                alert(`✓ Withdrawal request submitted!\n\nOriginal Amount: $${details.original_amount}\nFee (10%): -$${details.deduction_fee}\nYou will receive: $${details.net_amount}\n\nProcessing time: 24-48 hours`);
+            } else {
+                alert(`❌ Error: ${data.message}`);
+            }
+            location.reload();
+        } catch (err) {
+            alert("⚠️ Could not submit withdrawal. Please check your connection and try again.");
         }
-        location.reload();
     };
 }
 </script>

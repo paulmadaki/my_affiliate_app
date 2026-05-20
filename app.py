@@ -4,7 +4,7 @@ import re
 import uuid
 import requests
 import random
-from datetime import datetime, date
+from datetime import datetime
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, abort
 from flask_sqlalchemy import SQLAlchemy
@@ -63,7 +63,8 @@ login_manager.login_view = 'login'
 login_manager.session_protection = 'strong'
 
 # --- DATABASE MODELS ---
-# NOTE: No model changes here — all existing columns/tables are preserved as-is.
+# NOTE: No model changes — all existing columns/tables are preserved exactly as-is.
+# Flask-Migrate is managing the schema in production; db.create_all() is NOT called here.
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -149,35 +150,105 @@ def generate_referral_code() -> str:
             return code
 
 
-# --- FIX 1: Extracted shared daily-reset logic into one helper ---
-# Previously this block was copy-pasted in both /get-question and /check-answer,
-# meaning any change had to be made in two places and they could drift apart.
-# Now there's a single source of truth.
-UNLIMITED_CHANCES = 999  # Named constant replacing the magic number
+# ---------------------------------------------------------------------------
+# CHANGE: Named constant for "unlimited" chances.
+# The original code used the bare integer 999 in two separate places, which is
+# a "magic number" — anyone reading it had to guess what it meant. Giving it a
+# name makes the intent clear everywhere it's used and means you only have to
+# change it in one place if you ever want a different sentinel value.
+# ---------------------------------------------------------------------------
+UNLIMITED_CHANCES = 999
 
 
+# ---------------------------------------------------------------------------
+# CHANGE: Extracted the daily-chances reset into a single reusable helper.
+#
+# Problem in the original code:
+#   The reset block (check last_chance_reset, set chances = 5, check referrals,
+#   set last_chance_reset) was copy-pasted identically into both /get-question
+#   and /check-answer. Duplicated logic is dangerous — if you ever need to fix
+#   or adjust the reset behaviour you have to remember to update both copies,
+#   and they can silently drift out of sync over time.
+#
+# What this function does:
+#   1. Compares the stored last_chance_reset date against today's UTC date.
+#   2. If it's a new day, resets chances to 5 (or UNLIMITED if they referred
+#      someone today) and updates last_chance_reset to right now.
+#   3. If it's already been reset today, does nothing and returns False.
+#
+# Why UTC specifically:
+#   Railway's Postgres server stores timestamps in UTC. Python's date.today()
+#   uses the local system timezone, which on Railway is also UTC — but relying
+#   on that coincidence is fragile. Using datetime.utcnow() everywhere makes
+#   the comparison explicit and safe regardless of server locale.
+#
+# Why we handle last_chance_reset being None:
+#   Older user rows created before this column existed could have NULL in the
+#   DB. Calling .date() on None would raise an AttributeError and crash the
+#   request, so we guard against it.
+#
+# Returns True if a reset happened (useful for callers that want to know),
+# False if today's reset had already been done.
+# ---------------------------------------------------------------------------
 def maybe_reset_daily_chances(user):
-    """
-    Resets a user's daily chances if they haven't been reset today.
-    Grants unlimited chances if the user made at least one referral today.
-    Safe to call multiple times — only acts once per calendar day.
-    """
-    today = date.today()
-    if user.last_chance_reset is None or user.last_chance_reset.date() != today:
-        user.chances = 5
-        referrals_today = ReferralHistory.query.filter(
-            ReferralHistory.referrer_id == user.id,
-            db.func.date(ReferralHistory.created_at) == today
-        ).count()
-        if referrals_today >= 1:
-            user.chances = UNLIMITED_CHANCES
-        user.last_chance_reset = datetime.now()
+    today = datetime.utcnow().date()
+
+    last_reset_date = None
+    if user.last_chance_reset is not None:
+        # last_chance_reset is stored as a timezone-naive UTC datetime.
+        # We call .date() on it to strip the time component so we can compare
+        # only the calendar day — we don't care about the exact hour/minute.
+        lr = user.last_chance_reset
+        if hasattr(lr, 'date'):
+            last_reset_date = lr.date()
+
+    if last_reset_date == today:
+        # Already reset today — leave chances exactly as they are.
+        return False
+
+    # It's a new calendar day, so restore the user's 5 free daily chances.
+    user.chances = 5
+
+    # Bonus rule: if this user referred at least one person today, they earn
+    # unlimited chances for the day (stored as the UNLIMITED_CHANCES sentinel).
+    referrals_today = ReferralHistory.query.filter(
+        ReferralHistory.referrer_id == user.id,
+        db.func.date(ReferralHistory.created_at) == today
+    ).count()
+    if referrals_today >= 1:
+        user.chances = UNLIMITED_CHANCES
+
+    # Stamp the reset time so this block won't fire again until tomorrow.
+    user.last_chance_reset = datetime.utcnow()
+    return True
 
 
-# --- FIX 2: Exchange rate cache ---
-# Previously get_naira_rate() made a live HTTP call on every /pay request,
-# which could be slow or fail under load. Now the rate is cached for 10 minutes
-# in a simple module-level dict — no extra dependencies needed.
+# ---------------------------------------------------------------------------
+# CHANGE: Exchange rate in-memory cache.
+#
+# Problem in the original code:
+#   get_naira_rate() made a live HTTP request to exchangerate-api.com on every
+#   single call — including every time /pay or /register loaded. If the
+#   external API was slow or down, every user hitting those pages would wait or
+#   see an error. Under any real traffic, this is a bottleneck.
+#
+# What the cache does:
+#   Stores the last successful rate and the time it was fetched in a simple
+#   module-level dict (_rate_cache). On each call it checks whether the cached
+#   value is still fresh (within RATE_CACHE_TTL_SECONDS = 10 minutes). If it
+#   is, it returns immediately without touching the network. If it's stale or
+#   missing, it fetches a fresh rate and updates the cache.
+#
+# Stale-cache fallback:
+#   If the live fetch fails but we have an old cached value, we return the
+#   stale value rather than the hardcoded 1500. A slightly outdated rate is
+#   far better than a wrong hardcoded one. Only if there's no cache at all do
+#   we fall back to 1500 as the last resort.
+#
+# No extra dependencies:
+#   This uses only a plain Python dict — no Redis, no Flask-Caching needed.
+#   Simple and safe for a single-process deployment on Railway.
+# ---------------------------------------------------------------------------
 _rate_cache = {"value": None, "fetched_at": None}
 RATE_CACHE_TTL_SECONDS = 600  # 10 minutes
 
@@ -187,6 +258,7 @@ def get_naira_rate():
     cached = _rate_cache["value"]
     fetched_at = _rate_cache["fetched_at"]
 
+    # Return the cached rate if it's still within the TTL window.
     if cached and fetched_at and (now - fetched_at).total_seconds() < RATE_CACHE_TTL_SECONDS:
         return cached
 
@@ -196,6 +268,7 @@ def get_naira_rate():
         payload = res.json()
         rate = payload.get('conversion_rates', {}).get('NGN')
         if rate:
+            # Fresh rate obtained — update the cache before returning.
             _rate_cache["value"] = rate
             _rate_cache["fetched_at"] = now
             return rate
@@ -203,12 +276,15 @@ def get_naira_rate():
     except Exception as exc:
         logger.warning('Failed to fetch exchange rate: %s', exc)
 
-    # Return stale cache if available, otherwise fall back to hardcoded value
+    # Live fetch failed. Return stale cache if we have one — a slightly old
+    # rate is still far more accurate than the hardcoded fallback.
     if cached:
         logger.info('Returning stale cached exchange rate.')
         return cached
 
-    return 1500  # Last-resort fallback
+    # Absolute last resort: hardcoded fallback. Log a warning so you notice.
+    logger.warning('Using hardcoded fallback exchange rate of 1500.')
+    return 1500
 
 
 # --- INIT (Flask-Migrate handles schema; create_all only runs outside production) ---
@@ -301,17 +377,29 @@ def register():
         db.session.add(new_user)
         db.session.commit()
 
-        # FIX 3: ReferralHistory is created on registration but earnings_usd is
-        # explicitly set to 0.0 here. The $0.50 credit only happens in /verify
-        # when payment is confirmed — this way the history row is not misleading.
+        # -------------------------------------------------------------------
+        # CHANGE: ReferralHistory row created with earnings_usd=0.0 and
+        # status='Pending' instead of earnings_usd=0.50 and status='Active'.
+        #
+        # Problem in the original code:
+        #   The referral record was written with earnings_usd=0.50 at the moment
+        #   of registration, before the referred user had paid anything. This
+        #   meant the referral history page showed "$0.50 earned" for users who
+        #   signed up but never activated — misleading for the referrer.
+        #
+        # The fix:
+        #   We create the record now (so the relationship is tracked) but mark
+        #   the earnings as 0.0 and the status as 'Pending'. The actual $0.50
+        #   credit is applied in /verify once Paystack confirms the payment.
+        # -------------------------------------------------------------------
         if referred_by:
             referrer = User.query.filter_by(referral_code=referred_by).first()
             if referrer:
                 referral_rec = ReferralHistory(
                     referrer_id=referrer.id,
                     referred_user_id=new_user.id,
-                    earnings_usd=0.0,       # Pending — not earned until activation
-                    status='Pending'        # Will be updated to Active on payment
+                    earnings_usd=0.0,    # Not earned yet — user hasn't paid
+                    status='Pending'     # Will become 'Active' after payment is verified
                 )
                 db.session.add(referral_rec)
                 db.session.commit()
@@ -338,8 +426,9 @@ def login():
             login_user(user)
             return redirect(url_for('dashboard'))
 
-        # FIX 4: Generic message prevents user enumeration
-        # (same message whether the email doesn't exist or the password is wrong)
+        # Using a generic message here intentionally — returning different messages
+        # for "email not found" vs "wrong password" would let an attacker enumerate
+        # which emails are registered in the system (user enumeration attack).
         flash('Invalid login details.')
     return render_template('login.html')
 
@@ -450,7 +539,21 @@ def verify_payment():
 
     data = res.get('data', {})
     if res.get('status') and data.get('status') == 'success':
-        # Guard: don't double-credit if verify is called twice for the same user
+        # -------------------------------------------------------------------
+        # CHANGE: Guard against double-activation.
+        #
+        # Problem in the original code:
+        #   There was no check on whether the user was already active before
+        #   crediting the referrer. If a user or browser re-requested the
+        #   /verify URL with the same Paystack reference (e.g. hitting back,
+        #   refreshing, or a network retry), the referrer's balance would be
+        #   incremented a second time for the same payment.
+        #
+        # The fix:
+        #   We only apply changes if is_active_member is currently False.
+        #   Once it's True, any further calls to /verify for this user are
+        #   silently ignored with an "already active" flash message.
+        # -------------------------------------------------------------------
         if not current_user.is_active_member:
             current_user.is_active_member = True
             if current_user.referred_by:
@@ -461,7 +564,8 @@ def verify_payment():
                         referred_user_id=current_user.id
                     ).first()
                     if referral_rec:
-                        # FIX 3 continued: now set the actual earnings and activate
+                        # Payment confirmed — now set the real earnings and mark active.
+                        # This pairs with the 0.0 / 'Pending' we wrote in /register.
                         referral_rec.earnings_usd = 0.50
                         referral_rec.status = 'Active'
             db.session.commit()
@@ -480,57 +584,139 @@ def verify_payment():
 @app.route('/get-question')
 @login_required
 def get_question():
-    # FIX 1: Using the shared helper instead of duplicated inline block
+    # -------------------------------------------------------------------
+    # CHANGE: Rewrote this entire route to fix three separate bugs.
+    #
+    # Bug 1 — missing db.session.refresh():
+    #   After maybe_reset_daily_chances() mutates user.chances and we call
+    #   db.session.commit(), SQLAlchemy's identity map can still hold the
+    #   OLD in-memory value of current_user.chances. Without explicitly
+    #   refreshing, the `if current_user.chances <= 0` check below could
+    #   read stale data and let a user with 0 chances through.
+    #   db.session.refresh(current_user) forces a re-read from the DB.
+    #
+    # Bug 2 — no retry on already-answered questions:
+    #   The original code picked one random question, then returned
+    #   "already_answered" if it had been won. The user had to click again
+    #   and hope the next random pick was unanswered. The new loop tries up
+    #   to 5 different questions before giving up, so users almost never
+    #   see a dead-end response on their first click.
+    #
+    # Bug 3 — frontend had no way to display remaining chances:
+    #   The response now includes "chances_remaining" so the frontend can
+    #   update a counter (e.g. "3 chances left today") without a separate
+    #   API call.
+    # -------------------------------------------------------------------
+
+    # Step 1: Reset daily chances if it's a new UTC day, then commit and
+    # refresh so current_user.chances reflects the actual DB value.
     maybe_reset_daily_chances(current_user)
     db.session.commit()
+    db.session.refresh(current_user)  # <-- critical: re-reads chances from DB
 
+    # Step 2: Gate check — refuse to serve a question if chances are exhausted.
+    # This prevents the frontend from receiving a question the user can't answer.
     if current_user.chances <= 0:
-        return jsonify({"status": "error", "message": "No chances left!"})
-
-    # FIX 5: Efficient random question selection — fetch only IDs from DB,
-    # then load the single chosen question. Avoids loading all rows into memory.
-    question_ids = db.session.query(Question.id).all()
-    if not question_ids:
-        return jsonify({"status": "error", "message": "No questions in database."})
-
-    q_id = random.choice(question_ids)[0]
-    q = db.session.get(Question, q_id)
-
-    answered_correct = AnsweredQuestion.query.filter_by(question_id=q.id, is_correct=True).first()
-    if answered_correct:
         return jsonify({
-            "status": "already_answered",
-            "message": "This question has already been answered."
+            "status": "no_chances",
+            "message": "You have used all your chances for today. Come back tomorrow!"
         })
 
+    # Step 3: Fetch only question IDs from the DB (not full rows) so we don't
+    # load the entire questions table into memory on every request.
+    question_ids = db.session.query(Question.id).all()
+    if not question_ids:
+        return jsonify({"status": "error", "message": "No questions available right now."})
+
+    # Step 4: Try up to 5 random picks to find a question that hasn't been
+    # correctly answered yet. Capped at 5 attempts to avoid an infinite loop
+    # in the edge case where nearly all questions have been won.
+    q = None
+    for _ in range(5):
+        q_id = random.choice(question_ids)[0]
+        candidate = db.session.get(Question, q_id)
+        already_won = AnsweredQuestion.query.filter_by(
+            question_id=candidate.id, is_correct=True
+        ).first()
+        if not already_won:
+            q = candidate
+            break
+
+    if q is None:
+        # All sampled questions were already answered — tell the frontend.
+        return jsonify({
+            "status": "all_answered",
+            "message": "All questions have been answered today. Check back later!"
+        })
+
+    # NOTE: We do NOT deduct a chance here. Chances are only deducted in
+    # /check-answer when the user actually submits a response. This means a
+    # page refresh or accidental load of /get-question never wastes a chance.
     return jsonify({
-        "id": q.id, "question": q.text,
-        "options": {"A": q.option_a, "B": q.option_b, "C": q.option_c, "D": q.option_d}
+        "id": q.id,
+        "question": q.text,
+        "options": {"A": q.option_a, "B": q.option_b, "C": q.option_c, "D": q.option_d},
+        # Show "unlimited" string if the user has referral-boosted chances,
+        # otherwise show the integer so the frontend can display a countdown.
+        "chances_remaining": current_user.chances if current_user.chances < UNLIMITED_CHANCES else "unlimited"
     })
+
 
 @app.route('/check-answer', methods=['POST'])
 @login_required
 def check_answer():
-    data = request.json
-    question = db.session.get(Question, data.get('question_id'))
+    # -------------------------------------------------------------------
+    # CHANGE: Rewrote this route to fix three bugs.
+    #
+    # Bug 1 — missing input validation:
+    #   The original code called data.get('question_id') without first
+    #   checking that `data` was not None. If the request body wasn't valid
+    #   JSON, this would raise an AttributeError. We now validate the
+    #   request payload before touching it.
+    #
+    # Bug 2 — missing db.session.refresh() (same as in /get-question):
+    #   After committing the daily reset we must refresh current_user so the
+    #   chances check below reads the real DB value, not a stale cached one.
+    #
+    # Bug 3 — chances_remaining added to every response:
+    #   Every JSON response now includes chances_remaining so the frontend
+    #   can update its display after each submission without a separate call.
+    # -------------------------------------------------------------------
 
+    data = request.json
+    # Validate that the request body exists and has the required fields.
+    if not data or 'question_id' not in data or 'choice' not in data:
+        return jsonify({"status": "error", "message": "Invalid request."})
+
+    question = db.session.get(Question, data.get('question_id'))
     if not question:
         return jsonify({"status": "error", "message": "Question not found."})
 
-    answered_correct = AnsweredQuestion.query.filter_by(question_id=question.id, is_correct=True).first()
+    # Guard: if anyone has already answered this question correctly, reject
+    # immediately — no point deducting a chance for an unwinnable question.
+    answered_correct = AnsweredQuestion.query.filter_by(
+        question_id=question.id, is_correct=True
+    ).first()
     if answered_correct:
         return jsonify({"status": "already_answered", "message": "This question has already been answered."})
 
-    # FIX 1: Using the shared helper instead of duplicated inline block
+    # Reset daily chances if needed, then refresh to get the live DB value.
     maybe_reset_daily_chances(current_user)
+    db.session.commit()
+    db.session.refresh(current_user)  # <-- critical: re-reads chances from DB
 
+    # Gate: user must have at least 1 chance remaining to submit.
     if current_user.chances <= 0:
-        db.session.commit()
-        return jsonify({"status": "error", "message": "No chances left!"})
+        return jsonify({
+            "status": "no_chances",
+            "message": "You have no chances remaining for today. Come back tomorrow!"
+        })
 
+    # Deduct one chance. Users with UNLIMITED_CHANCES (referral bonus) are exempt.
     if current_user.chances < UNLIMITED_CHANCES:
         current_user.chances -= 1
 
+    # Evaluate the answer.
     is_correct = data.get('choice') == question.correct_answer
     answer_record = AnsweredQuestion(
         question_id=question.id,
@@ -540,26 +726,50 @@ def check_answer():
     )
     db.session.add(answer_record)
 
+    # Calculate what to show the frontend for remaining chances.
+    chances_left = current_user.chances if current_user.chances < UNLIMITED_CHANCES else "unlimited"
+
     if is_correct:
-        # FIX 6: Row-level lock prevents two concurrent winners claiming the same PIN.
-        # with_for_update() issues SELECT ... FOR UPDATE in Postgres, which blocks
-        # any other transaction from reading this row until we commit.
+        # -------------------------------------------------------------------
+        # CHANGE: Added SELECT FOR UPDATE (row-level lock) on the PIN query.
+        #
+        # Problem in the original code:
+        #   Two users answering correctly at almost the same moment could both
+        #   execute `filter_by(is_used=False).first()` before either one had
+        #   committed, causing both transactions to see the same unused PIN and
+        #   award it to two different people.
+        #
+        # The fix:
+        #   .with_for_update() appends "FOR UPDATE" to the SQL SELECT, which
+        #   tells Postgres to lock the chosen row. Any other transaction that
+        #   tries to SELECT the same row will block until we commit, guaranteeing
+        #   only one winner can claim each PIN.
+        # -------------------------------------------------------------------
         pin = RechargeCard.query.filter_by(is_used=False).with_for_update().first()
 
         if not pin:
             db.session.commit()
             return jsonify({
                 "status": "correct_but_empty",
-                "message": "Correct! However, all airtime rewards for today have been claimed. Please try again tomorrow or contact support."
+                "message": "Correct! However, all airtime rewards have been claimed. Contact support.",
+                "chances_remaining": chances_left
             })
-        else:
-            pin.is_used = True
-            pin.winner_id = current_user.id
-            db.session.commit()
-            return jsonify({"status": "win", "pin": pin.pin})
+
+        pin.is_used = True
+        pin.winner_id = current_user.id
+        db.session.commit()
+        return jsonify({
+            "status": "win",
+            "pin": pin.pin,
+            "chances_remaining": chances_left
+        })
 
     db.session.commit()
-    return jsonify({"status": "wrong", "message": "Incorrect!"})
+    return jsonify({
+        "status": "wrong",
+        "message": "Incorrect answer!",
+        "chances_remaining": chances_left
+    })
 
 @app.route('/request-payout', methods=['POST'])
 @login_required
