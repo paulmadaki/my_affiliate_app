@@ -190,38 +190,78 @@ UNLIMITED_CHANCES = 999
 # Returns True if a reset happened (useful for callers that want to know),
 # False if today's reset had already been done.
 # ---------------------------------------------------------------------------
-def maybe_reset_daily_chances(user):
+def has_referral_today(user_id):
+    # Returns True if this user has at least one Active (paid) referral
+    # whose created_at date matches today (UTC calendar date).
+    #
+    # "Today" is determined by calendar date only — 2025-06-01 is today
+    # regardless of whether it is 00:01 or 23:59. No time component involved.
+    #
+    # Only Active referrals count. A Pending referral means the person
+    # signed up but has not paid yet — that does not earn unlimited chances.
+    # Status is set to Active in /verify once Paystack confirms payment.
     today = datetime.utcnow().date()
+    referrals = ReferralHistory.query.filter(
+        ReferralHistory.referrer_id == user_id,
+        ReferralHistory.status == 'Active'
+    ).with_entities(ReferralHistory.created_at).all()
+    return any(r.created_at and r.created_at.date() == today for r in referrals)
 
+
+def maybe_reset_daily_chances(user):
+    # RULE 1 — Daily reset by calendar date (not by time):
+    #   Compare today's UTC calendar date against the date stored in
+    #   last_chance_reset. If they differ it is a new day — reset to 5.
+    #   We write midnight (00:00:00) of today back to last_chance_reset so
+    #   the stored value is always the start of the current day with no time
+    #   component, making the date comparison unambiguous. This means the
+    #   reset is purely date-driven: it fires once per calendar day regardless
+    #   of what hour the user first visits.
+    #
+    # RULE 2 — Unlimited upgrade by referral (runs every call):
+    #   After the reset (or if today's reset already ran), check whether this
+    #   user has at least one Active referral dated today. If yes, upgrade
+    #   chances to UNLIMITED_CHANCES no matter how many chances are left.
+    #   This runs on every call — not just on reset day — so the upgrade
+    #   is instant the moment a referred user pays, without needing a page
+    #   reload or waiting until the next daily reset.
+    #
+    # RULE 3 — Next day always resets to 5:
+    #   Even if the user had unlimited chances yesterday, the new-day check
+    #   resets to 5 first. If they also referred someone today the unlimited
+    #   upgrade in Step 2 immediately overrides the 5. If not, they get 5.
+    #
+    # IMPORTANT: Always commit after calling this. The unlimited upgrade in
+    #   Step 2 can mutate user.chances even when no daily reset occurred.
+
+    today = datetime.utcnow().date()
+    # midnight of today as a datetime — used when writing last_chance_reset
+    today_midnight = datetime(today.year, today.month, today.day, 0, 0, 0)
+
+    # --- Step 1: Date-based daily reset ---
     last_reset_date = None
     if user.last_chance_reset is not None:
-        # last_chance_reset is stored as a timezone-naive UTC datetime.
-        # We call .date() on it to strip the time component so we can compare
-        # only the calendar day — we don't care about the exact hour/minute.
         lr = user.last_chance_reset
         if hasattr(lr, 'date'):
             last_reset_date = lr.date()
 
-    if last_reset_date == today:
-        # Already reset today — leave chances exactly as they are.
-        return False
+    did_reset = False
+    if last_reset_date != today:
+        # New calendar day — restore 5 free chances.
+        # Store midnight so the column holds a clean date with no stray time.
+        user.chances = 5
+        user.last_chance_reset = today_midnight
+        did_reset = True
 
-    # It's a new calendar day, so restore the user's 5 free daily chances.
-    user.chances = 5
-
-    # Bonus rule: if this user referred at least one person today, they earn
-    # unlimited chances for the day (stored as the UNLIMITED_CHANCES sentinel).
-    referrals_today = ReferralHistory.query.filter(
-        ReferralHistory.referrer_id == user.id,
-        db.func.date(ReferralHistory.created_at) == today
-    ).count()
-    if referrals_today >= 1:
+    # --- Step 2: Unlimited upgrade (every call, regardless of reset) ---
+    # Always runs so a referral that happened after this morning's reset
+    # is picked up immediately on the next call without waiting for midnight.
+    if has_referral_today(user.id):
+        # Upgrade unconditionally — even if user already has some chances left,
+        # one paid referral today means unlimited for the rest of today.
         user.chances = UNLIMITED_CHANCES
 
-    # Stamp the reset time so this block won't fire again until tomorrow.
-    user.last_chance_reset = datetime.utcnow()
-    return True
-
+    return did_reset
 
 # ---------------------------------------------------------------------------
 # CHANGE: Exchange rate in-memory cache.
@@ -453,8 +493,8 @@ def dashboard():
     #   This means the number the user sees the moment they log in is always
     #   accurate, with no interaction required.
     # -------------------------------------------------------------------
-    if maybe_reset_daily_chances(current_user):
-        db.session.commit()
+    maybe_reset_daily_chances(current_user)
+    db.session.commit()
 
     pins_count = RechargeCard.query.filter_by(is_used=False).count()
     answered_records = (
@@ -497,9 +537,9 @@ def get_chances():
     #   reset already happened today, maybe_reset_daily_chances() returns False
     #   and no commit is issued.
     # -------------------------------------------------------------------
-    if maybe_reset_daily_chances(current_user):
-        db.session.commit()
-        db.session.refresh(current_user)
+    maybe_reset_daily_chances(current_user)
+    db.session.commit()
+    db.session.refresh(current_user)
 
     chances = current_user.chances
     return jsonify({
@@ -617,10 +657,16 @@ def verify_payment():
                         referred_user_id=current_user.id
                     ).first()
                     if referral_rec:
-                        # Payment confirmed — now set the real earnings and mark active.
-                        # This pairs with the 0.0 / 'Pending' we wrote in /register.
+                        # Payment confirmed — set real earnings and mark Active.
+                        # This pairs with the 0.0 / 'Pending' written in /register.
                         referral_rec.earnings_usd = 0.50
                         referral_rec.status = 'Active'
+                    # Immediately upgrade the referrer's chances to unlimited.
+                    # The referral is now Active so has_referral_today() will
+                    # return True for the referrer. We call maybe_reset_daily_chances
+                    # so the upgrade fires right now in this same request — the
+                    # referrer does not have to reload their dashboard to see it.
+                    maybe_reset_daily_chances(referrer)
             db.session.commit()
             flash('Account Activated!')
         else:
@@ -672,7 +718,7 @@ def get_question():
     if current_user.chances <= 0:
         return jsonify({
             "status": "no_chances",
-            "message": "You have used all your chances for today. Come back tomorrow or refer a friend to earn more chances!"
+            "message": "You have used all your chances for today. Come back tomorrow!"
         })
 
     # Step 3: Fetch only question IDs from the DB (not full rows) so we don't
@@ -762,7 +808,7 @@ def check_answer():
     if current_user.chances <= 0:
         return jsonify({
             "status": "no_chances",
-            "message": "You have no chances remaining for today. Come back tomorrow or refer a friend to earn more chances!"
+            "message": "You have no chances remaining for today. Come back tomorrow or refer a friend to earn more!",
         })
 
     # Deduct one chance. Users with UNLIMITED_CHANCES (referral bonus) are exempt.
