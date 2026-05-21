@@ -323,6 +323,42 @@ function updateChancesDisplay(chancesRemaining) {
     el.textContent = (chancesRemaining === 'unlimited') ? 'Unlimited' : chancesRemaining;
 }
 
+/*
+ * CHANGE: Fetch fresh chances from /get-chances and update the counter.
+ *
+ * Called in two situations:
+ *   1. On page load — as a safety net in case the server-side reset in the
+ *      dashboard route ever lags (e.g. cached response from a CDN or proxy).
+ *      In normal operation the template already renders the correct number,
+ *      so this call will usually just confirm what's already on screen.
+ *   2. On visibilitychange — when the user returns to a tab they left open
+ *      overnight. The page was rendered yesterday with "0 chances", but the
+ *      server-side reset hasn't fired because the dashboard route hasn't been
+ *      re-requested. This call updates the counter live without a full reload.
+ */
+async function refreshChancesFromServer() {
+    try {
+        const res = await fetch('/get-chances');
+        if (!res.ok) return;
+        const data = await res.json();
+        updateChancesDisplay(data.display);
+    } catch (err) {
+        // Non-critical — if the call fails the displayed number is just stale.
+        // No alert needed; the user will see the correct number on next reload.
+    }
+}
+
+// Call once immediately when the page finishes loading.
+refreshChancesFromServer();
+
+// Call again whenever the user returns to this tab after being away.
+// This is the key fix for the "left tab open overnight" edge case.
+document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') {
+        refreshChancesFromServer();
+    }
+});
+
 function copyLink() {
     var copyText = document.getElementById("refLink");
     copyText.select();

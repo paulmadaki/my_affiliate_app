@@ -435,6 +435,27 @@ def login():
 @app.route('/dashboard')
 @login_required
 def dashboard():
+    # -------------------------------------------------------------------
+    # CHANGE: Run the daily chances reset here, at dashboard load time.
+    #
+    # Problem:
+    #   Previously the reset only ran inside /get-question and /check-answer,
+    #   meaning the dashboard template rendered whatever stale value was in the
+    #   DB — typically 0 from the day before. Users logging in the next morning
+    #   would see "0 chances" and think they had none, because the reset hadn't
+    #   fired yet. They had to click "Start Trivia" first to trigger it.
+    #
+    # The fix:
+    #   Call maybe_reset_daily_chances() right here before the template renders.
+    #   If it's a new day, chances are updated and committed so the template
+    #   receives the correct fresh value. If it's the same day, the helper does
+    #   nothing (returns False) and we skip the commit — zero extra DB cost.
+    #   This means the number the user sees the moment they log in is always
+    #   accurate, with no interaction required.
+    # -------------------------------------------------------------------
+    if maybe_reset_daily_chances(current_user):
+        db.session.commit()
+
     pins_count = RechargeCard.query.filter_by(is_used=False).count()
     answered_records = (
         AnsweredQuestion.query
@@ -453,6 +474,38 @@ def dashboard():
         answered_records=answered_records,
         referral_link=referral_link
     )
+
+
+@app.route('/get-chances')
+@login_required
+def get_chances():
+    # -------------------------------------------------------------------
+    # CHANGE: New lightweight endpoint the dashboard JS calls on page load
+    # and on tab visibility change.
+    #
+    # Why this exists alongside the dashboard-route fix above:
+    #   The dashboard route fix handles the initial page render — the number
+    #   in the HTML will always be correct when the page first loads.
+    #   This endpoint handles a second edge case: a user who leaves the
+    #   dashboard tab open overnight. The page was rendered yesterday with
+    #   the correct count, but midnight passed and the tab was never refreshed.
+    #   The JS listens for the browser's visibilitychange event and calls this
+    #   endpoint when the user returns to the tab, updating the counter live
+    #   without requiring a full page reload.
+    #
+    #   It runs the same reset helper so calling it is always safe — if the
+    #   reset already happened today, maybe_reset_daily_chances() returns False
+    #   and no commit is issued.
+    # -------------------------------------------------------------------
+    if maybe_reset_daily_chances(current_user):
+        db.session.commit()
+        db.session.refresh(current_user)
+
+    chances = current_user.chances
+    return jsonify({
+        "chances": chances,
+        "display": "unlimited" if chances >= UNLIMITED_CHANCES else chances
+    })
 
 
 @app.route('/profile')
@@ -619,7 +672,7 @@ def get_question():
     if current_user.chances <= 0:
         return jsonify({
             "status": "no_chances",
-            "message": "You have used all your chances for today. Come back tomorrow!"
+            "message": "You have used all your chances for today. Come back tomorrow or refer a friend to earn more chances!"
         })
 
     # Step 3: Fetch only question IDs from the DB (not full rows) so we don't
@@ -709,7 +762,7 @@ def check_answer():
     if current_user.chances <= 0:
         return jsonify({
             "status": "no_chances",
-            "message": "You have no chances remaining for today. Come back tomorrow!"
+            "message": "You have no chances remaining for today. Come back tomorrow or refer a friend to earn more chances!"
         })
 
     # Deduct one chance. Users with UNLIMITED_CHANCES (referral bonus) are exempt.
