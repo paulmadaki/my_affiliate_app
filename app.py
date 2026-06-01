@@ -4,7 +4,10 @@ import re
 import uuid
 import requests
 import random
-from datetime import datetime
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, abort
 from flask_sqlalchemy import SQLAlchemy
@@ -128,6 +131,23 @@ class AnsweredQuestion(db.Model):
 
     question = db.relationship('Question', backref=db.backref('answer_records', lazy=True))
     answered_by = db.relationship('User', foreign_keys=[answered_by_id])
+
+
+class PasswordResetToken(db.Model):
+    # Stores one-time password reset tokens.
+    # Each token is a UUID hex string, tied to a user, with a 1-hour expiry.
+    # Used by /forgot-password (create) and /reset-password/<token> (consume).
+    # Token is deleted after use so it cannot be reused.
+    # Flask-Migrate will create this table on the next `flask db upgrade` —
+    # no existing table is touched.
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    token = db.Column(db.String(64), unique=True, nullable=False)
+    expires_at = db.Column(db.DateTime, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+
+    user = db.relationship('User', backref=db.backref('reset_tokens', lazy=True))
+
 
 # --- VALIDATION HELPERS ---
 
@@ -358,6 +378,108 @@ ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@example.com')
 
 if not PAYSTACK_SECRET:
     logger.warning('PAYSTACK_SECRET is not set. Paystack payments will be unavailable.')
+
+# --- GMAIL SMTP CONFIG ---
+# Add these three variables to your Railway environment variables:
+#
+#   GMAIL_USER         — the Gmail address you will send from, e.g. yourapp@gmail.com
+#   GMAIL_APP_PASSWORD — the 16-character App Password generated from your Google account.
+#                        How to get it:
+#                          1. Go to myaccount.google.com → Security
+#                          2. Turn on 2-Step Verification if it is not already on
+#                          3. Search "App Passwords" in the Security page search bar
+#                          4. Click App Passwords → choose Mail → Generate
+#                          5. Copy the 16-character password shown — that is this value
+#                        NOTE: this is NOT your normal Gmail login password.
+#   APP_BASE_URL       — your Railway public URL e.g. https://yourapp.up.railway.app
+#                        Used to build the clickable reset link in the email body.
+GMAIL_USER = os.getenv('GMAIL_USER')
+GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD')
+APP_BASE_URL = os.getenv('APP_BASE_URL', '').rstrip('/')
+
+if not GMAIL_USER or not GMAIL_APP_PASSWORD:
+    logger.warning('GMAIL_USER or GMAIL_APP_PASSWORD not set. Password reset emails will be unavailable.')
+
+
+def send_reset_email(to_email: str, reset_url: str, user_name: str) -> bool:
+    """
+    Sends a password reset email via Gmail SMTP using an App Password.
+    Uses Python's built-in smtplib — no extra packages needed.
+
+    Returns True if sent successfully, False on any error.
+    Errors are logged but never raised — a failed send must never crash the route.
+
+    Gmail SMTP settings:
+      Host : smtp.gmail.com
+      Port : 587  (STARTTLS — not SSL port 465)
+      Login: GMAIL_USER + GMAIL_APP_PASSWORD
+
+    The reset link expires in 1 hour, enforced server-side in /reset-password.
+    """
+    if not GMAIL_USER or not GMAIL_APP_PASSWORD:
+        logger.error('Cannot send reset email: GMAIL_USER or GMAIL_APP_PASSWORD not configured.')
+        return False
+
+    try:
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = 'Reset Your Password — Rewards'
+        msg['From'] = f'Rewards <{GMAIL_USER}>'
+        msg['To'] = to_email
+
+        # Plain-text fallback for email clients that do not render HTML
+        text_body = (
+            f"Hi {user_name},\n\n"
+            f"You requested a password reset for your Rewards account.\n\n"
+            f"Click the link below to set a new password. "
+            f"This link expires in 1 hour:\n\n"
+            f"{reset_url}\n\n"
+            f"If you did not request this, you can safely ignore this email. "
+            f"Your password will not change unless you click the link above.\n\n"
+            f"— The Rewards Team"
+        )
+
+        # HTML version shown in modern email clients
+        html_body = f"""
+        <div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;
+                    padding:24px;border:1px solid #e0e0e0;border-radius:10px;">
+            <h2 style="color:#0d6efd;">Password Reset</h2>
+            <p>Hi <strong>{user_name}</strong>,</p>
+            <p>You requested a password reset for your <strong>Rewards</strong> account.</p>
+            <p>Click the button below to set a new password.
+               This link expires in <strong>1 hour</strong>.</p>
+            <a href="{reset_url}"
+               style="display:inline-block;margin:16px 0;padding:12px 28px;
+                      background:#0d6efd;color:#fff;text-decoration:none;
+                      border-radius:6px;font-weight:bold;">
+                Reset My Password
+            </a>
+            <p style="font-size:0.85rem;color:#888;">
+                If the button does not work, copy and paste this link into your browser:<br>
+                <a href="{reset_url}" style="color:#0d6efd;">{reset_url}</a>
+            </p>
+            <hr style="border:none;border-top:1px solid #eee;margin:20px 0;">
+            <p style="font-size:0.8rem;color:#aaa;">
+                If you did not request this, ignore this email.
+                Your password will not change.
+            </p>
+        </div>
+        """
+
+        msg.attach(MIMEText(text_body, 'plain'))
+        msg.attach(MIMEText(html_body, 'html'))
+
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+            server.ehlo()
+            server.starttls()       # Upgrade to encrypted connection
+            server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
+            server.sendmail(GMAIL_USER, to_email, msg.as_string())
+
+        logger.info('Password reset email sent to %s', to_email)
+        return True
+
+    except Exception as exc:
+        logger.exception('Failed to send reset email to %s: %s', to_email, exc)
+        return False
 
 
 @app.after_request
@@ -928,6 +1050,106 @@ def request_payout():
             'net_amount': round(net_amount, 2)
         }
     })
+
+@app.route('/forgot-password', methods=['GET', 'POST'])
+def forgot_password():
+    """
+    Step 1 of password reset: user enters their WhatsApp number.
+
+    On POST:
+      - Look up the WhatsApp number in the DB.
+      - If found: delete old tokens, create a new 1-hour token, send the
+        reset link via WhatsApp.
+      - Always show the same success message whether or not the number
+        exists — prevents user enumeration.
+    """
+    if request.method == 'POST':
+        email = request.form.get('email', '').strip().lower()
+
+        if not email or not is_valid_email(email):
+            flash('Please enter a valid email address.')
+            return redirect(url_for('forgot_password'))
+
+        user = User.query.filter_by(email=email).first()
+        if user:
+            # Delete any existing unused tokens — old links are immediately
+            # invalidated when a new reset is requested.
+            PasswordResetToken.query.filter_by(user_id=user.id).delete()
+
+            # Create a fresh token expiring in 1 hour.
+            token_value = uuid.uuid4().hex + uuid.uuid4().hex  # 64-char hex
+            expires_at = datetime.utcnow() + timedelta(hours=1)
+            reset_token = PasswordResetToken(
+                user_id=user.id,
+                token=token_value,
+                expires_at=expires_at
+            )
+            db.session.add(reset_token)
+            db.session.commit()
+
+            reset_url = f"{APP_BASE_URL}{url_for('reset_password', token=token_value)}"
+            sent = send_reset_email(user.email, reset_url, user.full_name)
+            if not sent:
+                logger.error('Reset email failed for user id=%s', user.id)
+
+        # Same message whether the email was found or not — prevents enumeration.
+        flash('If that email is registered, a reset link has been sent. Check your inbox (and spam folder).')
+        return redirect(url_for('login'))
+
+    return render_template('forgot_password.html')
+
+
+@app.route('/reset-password/<token>', methods=['GET', 'POST'])
+def reset_password(token):
+    """
+    Step 2 of the reset flow: user arrives via the emailed link and sets
+    a new password.
+
+    Security checks:
+      - Token must exist in the DB.
+      - Token must not have expired (1-hour window).
+      - Token is deleted immediately after a successful reset so it cannot
+        be reused (even if someone intercepts it from browser history).
+      - New password must be at least 6 characters (same rule as registration).
+    """
+    reset_token = PasswordResetToken.query.filter_by(token=token).first()
+
+    # Validate the token exists and has not expired.
+    if not reset_token or reset_token.expires_at < datetime.utcnow():
+        # Delete the expired token from the DB to keep the table clean.
+        if reset_token:
+            db.session.delete(reset_token)
+            db.session.commit()
+        flash('This password reset link is invalid or has expired. Please request a new one.')
+        return redirect(url_for('forgot_password'))
+
+    if request.method == 'POST':
+        new_password = request.form.get('password', '')
+        confirm_password = request.form.get('confirm_password', '')
+
+        if len(new_password) < 6:
+            flash('Password must be at least 6 characters.')
+            return redirect(url_for('reset_password', token=token))
+
+        if new_password != confirm_password:
+            flash('Passwords do not match.')
+            return redirect(url_for('reset_password', token=token))
+
+        # Update the password.
+        user = reset_token.user
+        user.password = generate_password_hash(new_password, method='pbkdf2:sha256')
+
+        # Delete the token so it cannot be reused.
+        db.session.delete(reset_token)
+        db.session.commit()
+
+        logger.info('Password reset successful for user %s', user.email)
+        flash('Your password has been reset. You can now log in with your new password.')
+        return redirect(url_for('login'))
+
+    # GET request — show the form.
+    return render_template('reset_password.html', token=token)
+
 
 @app.route('/logout')
 @login_required
