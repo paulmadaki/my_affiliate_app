@@ -298,31 +298,41 @@ def get_naira_rate():
     cached = _rate_cache["value"]
     fetched_at = _rate_cache["fetched_at"]
 
-    # Return the cached rate if it's still within the TTL window.
+    # Return the cached rate if it is still within the TTL window.
     if cached and fetched_at and (now - fetched_at).total_seconds() < RATE_CACHE_TTL_SECONDS:
         return cached
 
     try:
-        res = requests.get('https://api.exchangerate-api.com/v6/latest/USD', timeout=5)
+        # FIXED URL: the open-access no-key endpoint is open.er-api.com, not
+        # api.exchangerate-api.com. The api. subdomain requires a paid API key
+        # and returns 404 without one — which is exactly what the logs showed.
+        #
+        # FIXED KEY: the open-access response uses "rates" not "conversion_rates".
+        # Using the wrong key caused .get() to return None silently and fall
+        # through to the hardcoded fallback even when the request succeeded.
+        #
+        # Open-access docs: https://www.exchangerate-api.com/docs/free
+        # No API key needed. Updates once per day. Rate limit: once per hour max.
+        # Our 10-minute cache (RATE_CACHE_TTL_SECONDS = 600) is well within that.
+        res = requests.get('https://open.er-api.com/v6/latest/USD', timeout=5)
         res.raise_for_status()
         payload = res.json()
-        rate = payload.get('conversion_rates', {}).get('NGN')
+        rate = payload.get('rates', {}).get('NGN')  # "rates" not "conversion_rates"
         if rate:
-            # Fresh rate obtained — update the cache before returning.
             _rate_cache["value"] = rate
             _rate_cache["fetched_at"] = now
             return rate
-        logger.warning('Exchange rate response missing NGN: %s', payload)
+        logger.warning('Exchange rate response missing NGN key. Full response: %s', payload)
     except Exception as exc:
         logger.warning('Failed to fetch exchange rate: %s', exc)
 
-    # Live fetch failed. Return stale cache if we have one — a slightly old
-    # rate is still far more accurate than the hardcoded fallback.
+    # Live fetch failed. Return stale cache if available — a slightly old
+    # rate is far better than the hardcoded fallback.
     if cached:
         logger.info('Returning stale cached exchange rate.')
         return cached
 
-    # Absolute last resort: hardcoded fallback. Log a warning so you notice.
+    # Absolute last resort: hardcoded fallback.
     logger.warning('Using hardcoded fallback exchange rate of 1500.')
     return 1500
 
@@ -808,7 +818,7 @@ def check_answer():
     if current_user.chances <= 0:
         return jsonify({
             "status": "no_chances",
-            "message": "You have no chances remaining for today. Come back tomorrow or refer a friend to earn more!",
+            "message": "You have no chances remaining for today. Come back tomorrow!"
         })
 
     # Deduct one chance. Users with UNLIMITED_CHANCES (referral bonus) are exempt.
