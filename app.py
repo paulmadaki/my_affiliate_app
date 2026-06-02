@@ -792,11 +792,11 @@ def forgot_password():
             flash('Please enter a valid email address.')
             return redirect(url_for('forgot_password'))
 
-        if not GMAIL_USER or not GMAIL_APP_PASSWORD:
+        if not MAIL_USERNAME or not MAIL_PASSWORD:
             # Email is not configured — log clearly and still return success
             # so the user is not confused, but operators will see this in logs.
             logger.error(
-                'Forgot-password: GMAIL_USER or GMAIL_APP_PASSWORD not set. '
+                'Forgot-password: MAIL_USERNAME or MAIL_PASSWORD not set. '
                 'Cannot send reset email. Configure these environment variables in Railway.'
             )
             flash('If that email is registered, a reset link has been sent. Check your inbox (and spam folder).')
