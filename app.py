@@ -5,6 +5,7 @@ import uuid
 import requests
 import random
 import smtplib
+import threading
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
@@ -343,9 +344,7 @@ def send_reset_email(to_email: str, reset_url: str, user_name: str) -> bool:
         msg.attach(MIMEText(text_body, 'plain'))
         msg.attach(MIMEText(html_body, 'html'))
 
-        # Uses MAIL_SERVER / MAIL_PORT from env vars — works with Brevo,
-        # or any other standard SMTP provider without changing this code.
-        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
+        with smtplib.SMTP('smtp.gmail.com', 587) as server:
             server.ehlo()
             server.starttls()
             server.login(MAIL_USERNAME, MAIL_PASSWORD)
@@ -774,17 +773,48 @@ def request_payout():
 
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
+    """
+    Step 1 of password reset: user enters their WhatsApp number.
+
+    On POST:
+      - Look up the WhatsApp number in the DB.
+      - If found: delete old tokens, create a new 1-hour token, send the
+        reset link via WhatsApp.
+      - Always show the same success message whether or not the number
+        exists — prevents user enumeration.
+    """
     if request.method == 'POST':
         email = request.form.get('email', '').strip().lower()
+        logger.info('Forgot-password request received for email: %s', email)
 
         if not email or not is_valid_email(email):
+            logger.warning('Forgot-password: invalid email format submitted: %s', email)
             flash('Please enter a valid email address.')
             return redirect(url_for('forgot_password'))
 
-        user = User.query.filter_by(email=email).first()
+        if not GMAIL_USER or not GMAIL_APP_PASSWORD:
+            # Email is not configured — log clearly and still return success
+            # so the user is not confused, but operators will see this in logs.
+            logger.error(
+                'Forgot-password: GMAIL_USER or GMAIL_APP_PASSWORD not set. '
+                'Cannot send reset email. Configure these environment variables in Railway.'
+            )
+            flash('If that email is registered, a reset link has been sent. Check your inbox (and spam folder).')
+            return redirect(url_for('login'))
+
+        try:
+            user = User.query.filter_by(email=email).first()
+        except Exception as exc:
+            logger.exception('Forgot-password: DB error looking up email %s: %s', email, exc)
+            flash('If that email is registered, a reset link has been sent. Check your inbox (and spam folder).')
+            return redirect(url_for('login'))
+
         if user:
+            # Delete any existing unused tokens — old links are immediately
+            # invalidated when a new reset is requested.
             PasswordResetToken.query.filter_by(user_id=user.id).delete()
 
+            # Create a fresh token expiring in 1 hour.
             token_value = uuid.uuid4().hex + uuid.uuid4().hex  # 64-char hex
             expires_at = datetime.utcnow() + timedelta(hours=1)
             reset_token = PasswordResetToken(
@@ -796,9 +826,34 @@ def forgot_password():
             db.session.commit()
 
             reset_url = f"{APP_BASE_URL}{url_for('reset_password', token=token_value)}"
-            sent = send_reset_email(user.email, reset_url, user.full_name)
-            if not sent:
-                logger.error('Reset email failed for user id=%s', user.id)
+
+            # Fire the email in a background daemon thread so the HTTP response
+            # is returned immediately. SMTP is a blocking network call (connect,
+            # STARTTLS handshake, AUTH, DATA) that can take several seconds even
+            # when Gmail is healthy. Running it synchronously here is what caused
+            # the Gunicorn worker timeout — the worker was held for the full SMTP
+            # round-trip (or until the 10-second socket timeout on failure).
+            #
+            # daemon=True means the thread will not prevent the process from
+            # exiting if Railway restarts the container mid-flight. The worst
+            # case is one lost email on a deploy — acceptable.
+            def _send_in_background(to_email, url, name, uid):
+                logger.info('Forgot-password: background thread starting email send for user id=%s', uid)
+                sent = send_reset_email(to_email, url, name)
+                if sent:
+                    logger.info('Forgot-password: reset email delivered for user id=%s', uid)
+                else:
+                    logger.error('Forgot-password: reset email FAILED for user id=%s', uid)
+
+            t = threading.Thread(
+                target=_send_in_background,
+                args=(user.email, reset_url, user.full_name, user.id),
+                daemon=True,
+            )
+            t.start()
+            logger.info('Forgot-password: email thread started for user id=%s, returning response now.', user.id)
+        else:
+            logger.info('Forgot-password: no user found for email %s (returning generic message).', email)
 
         flash('If that email is registered, a reset link has been sent. Check your inbox (and spam folder).')
         return redirect(url_for('login'))
