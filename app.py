@@ -49,7 +49,7 @@ if not database_url:
 if database_url.startswith("postgres://"):
     database_url = database_url.replace("postgres://", "postgresql://", 1)
 
-print("DATABASE_URL scheme =", database_url.split("@")[0].split(":")[0])  # Safe partial log
+print("DATABASE_URL scheme =", database_url.split("@")[0].split(":")[0])
 
 app.config['SQLALCHEMY_DATABASE_URI'] = database_url
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
@@ -66,8 +66,6 @@ login_manager.login_view = 'login'
 login_manager.session_protection = 'strong'
 
 # --- DATABASE MODELS ---
-# NOTE: No model changes — all existing columns/tables are preserved exactly as-is.
-# Flask-Migrate is managing the schema in production; db.create_all() is NOT called here.
 
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -136,10 +134,7 @@ class AnsweredQuestion(db.Model):
 class PasswordResetToken(db.Model):
     # Stores one-time password reset tokens.
     # Each token is a UUID hex string, tied to a user, with a 1-hour expiry.
-    # Used by /forgot-password (create) and /reset-password/<token> (consume).
     # Token is deleted after use so it cannot be reused.
-    # Flask-Migrate will create this table on the next `flask db upgrade` —
-    # no existing table is touched.
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     token = db.Column(db.String(64), unique=True, nullable=False)
@@ -170,56 +165,12 @@ def generate_referral_code() -> str:
             return code
 
 
-# ---------------------------------------------------------------------------
-# CHANGE: Named constant for "unlimited" chances.
-# The original code used the bare integer 999 in two separate places, which is
-# a "magic number" — anyone reading it had to guess what it meant. Giving it a
-# name makes the intent clear everywhere it's used and means you only have to
-# change it in one place if you ever want a different sentinel value.
-# ---------------------------------------------------------------------------
 UNLIMITED_CHANCES = 999
 
 
-# ---------------------------------------------------------------------------
-# CHANGE: Extracted the daily-chances reset into a single reusable helper.
-#
-# Problem in the original code:
-#   The reset block (check last_chance_reset, set chances = 5, check referrals,
-#   set last_chance_reset) was copy-pasted identically into both /get-question
-#   and /check-answer. Duplicated logic is dangerous — if you ever need to fix
-#   or adjust the reset behaviour you have to remember to update both copies,
-#   and they can silently drift out of sync over time.
-#
-# What this function does:
-#   1. Compares the stored last_chance_reset date against today's UTC date.
-#   2. If it's a new day, resets chances to 5 (or UNLIMITED if they referred
-#      someone today) and updates last_chance_reset to right now.
-#   3. If it's already been reset today, does nothing and returns False.
-#
-# Why UTC specifically:
-#   Railway's Postgres server stores timestamps in UTC. Python's date.today()
-#   uses the local system timezone, which on Railway is also UTC — but relying
-#   on that coincidence is fragile. Using datetime.utcnow() everywhere makes
-#   the comparison explicit and safe regardless of server locale.
-#
-# Why we handle last_chance_reset being None:
-#   Older user rows created before this column existed could have NULL in the
-#   DB. Calling .date() on None would raise an AttributeError and crash the
-#   request, so we guard against it.
-#
-# Returns True if a reset happened (useful for callers that want to know),
-# False if today's reset had already been done.
-# ---------------------------------------------------------------------------
 def has_referral_today(user_id):
     # Returns True if this user has at least one Active (paid) referral
     # whose created_at date matches today (UTC calendar date).
-    #
-    # "Today" is determined by calendar date only — 2025-06-01 is today
-    # regardless of whether it is 00:01 or 23:59. No time component involved.
-    #
-    # Only Active referrals count. A Pending referral means the person
-    # signed up but has not paid yet — that does not earn unlimited chances.
-    # Status is set to Active in /verify once Paystack confirms payment.
     today = datetime.utcnow().date()
     referrals = ReferralHistory.query.filter(
         ReferralHistory.referrer_id == user_id,
@@ -229,33 +180,12 @@ def has_referral_today(user_id):
 
 
 def maybe_reset_daily_chances(user):
-    # RULE 1 — Daily reset by calendar date (not by time):
-    #   Compare today's UTC calendar date against the date stored in
-    #   last_chance_reset. If they differ it is a new day — reset to 5.
-    #   We write midnight (00:00:00) of today back to last_chance_reset so
-    #   the stored value is always the start of the current day with no time
-    #   component, making the date comparison unambiguous. This means the
-    #   reset is purely date-driven: it fires once per calendar day regardless
-    #   of what hour the user first visits.
-    #
-    # RULE 2 — Unlimited upgrade by referral (runs every call):
-    #   After the reset (or if today's reset already ran), check whether this
-    #   user has at least one Active referral dated today. If yes, upgrade
-    #   chances to UNLIMITED_CHANCES no matter how many chances are left.
-    #   This runs on every call — not just on reset day — so the upgrade
-    #   is instant the moment a referred user pays, without needing a page
-    #   reload or waiting until the next daily reset.
-    #
-    # RULE 3 — Next day always resets to 5:
-    #   Even if the user had unlimited chances yesterday, the new-day check
-    #   resets to 5 first. If they also referred someone today the unlimited
-    #   upgrade in Step 2 immediately overrides the 5. If not, they get 5.
-    #
-    # IMPORTANT: Always commit after calling this. The unlimited upgrade in
-    #   Step 2 can mutate user.chances even when no daily reset occurred.
+    # RULE 1: Date-based daily reset — fires once per calendar day (UTC).
+    # RULE 2: Unlimited upgrade — runs every call so referral bonus is instant.
+    # RULE 3: Next day always resets to 5 first, then upgrade applies if earned.
+    # IMPORTANT: Always commit after calling this.
 
     today = datetime.utcnow().date()
-    # midnight of today as a datetime — used when writing last_chance_reset
     today_midnight = datetime(today.year, today.month, today.day, 0, 0, 0)
 
     # --- Step 1: Date-based daily reset ---
@@ -267,48 +197,18 @@ def maybe_reset_daily_chances(user):
 
     did_reset = False
     if last_reset_date != today:
-        # New calendar day — restore 5 free chances.
-        # Store midnight so the column holds a clean date with no stray time.
         user.chances = 5
         user.last_chance_reset = today_midnight
         did_reset = True
 
     # --- Step 2: Unlimited upgrade (every call, regardless of reset) ---
-    # Always runs so a referral that happened after this morning's reset
-    # is picked up immediately on the next call without waiting for midnight.
     if has_referral_today(user.id):
-        # Upgrade unconditionally — even if user already has some chances left,
-        # one paid referral today means unlimited for the rest of today.
         user.chances = UNLIMITED_CHANCES
 
     return did_reset
 
-# ---------------------------------------------------------------------------
-# CHANGE: Exchange rate in-memory cache.
-#
-# Problem in the original code:
-#   get_naira_rate() made a live HTTP request to exchangerate-api.com on every
-#   single call — including every time /pay or /register loaded. If the
-#   external API was slow or down, every user hitting those pages would wait or
-#   see an error. Under any real traffic, this is a bottleneck.
-#
-# What the cache does:
-#   Stores the last successful rate and the time it was fetched in a simple
-#   module-level dict (_rate_cache). On each call it checks whether the cached
-#   value is still fresh (within RATE_CACHE_TTL_SECONDS = 10 minutes). If it
-#   is, it returns immediately without touching the network. If it's stale or
-#   missing, it fetches a fresh rate and updates the cache.
-#
-# Stale-cache fallback:
-#   If the live fetch fails but we have an old cached value, we return the
-#   stale value rather than the hardcoded 1500. A slightly outdated rate is
-#   far better than a wrong hardcoded one. Only if there's no cache at all do
-#   we fall back to 1500 as the last resort.
-#
-# No extra dependencies:
-#   This uses only a plain Python dict — no Redis, no Flask-Caching needed.
-#   Simple and safe for a single-process deployment on Railway.
-# ---------------------------------------------------------------------------
+
+# --- EXCHANGE RATE CACHE ---
 _rate_cache = {"value": None, "fetched_at": None}
 RATE_CACHE_TTL_SECONDS = 600  # 10 minutes
 
@@ -318,26 +218,14 @@ def get_naira_rate():
     cached = _rate_cache["value"]
     fetched_at = _rate_cache["fetched_at"]
 
-    # Return the cached rate if it is still within the TTL window.
     if cached and fetched_at and (now - fetched_at).total_seconds() < RATE_CACHE_TTL_SECONDS:
         return cached
 
     try:
-        # FIXED URL: the open-access no-key endpoint is open.er-api.com, not
-        # api.exchangerate-api.com. The api. subdomain requires a paid API key
-        # and returns 404 without one — which is exactly what the logs showed.
-        #
-        # FIXED KEY: the open-access response uses "rates" not "conversion_rates".
-        # Using the wrong key caused .get() to return None silently and fall
-        # through to the hardcoded fallback even when the request succeeded.
-        #
-        # Open-access docs: https://www.exchangerate-api.com/docs/free
-        # No API key needed. Updates once per day. Rate limit: once per hour max.
-        # Our 10-minute cache (RATE_CACHE_TTL_SECONDS = 600) is well within that.
         res = requests.get('https://open.er-api.com/v6/latest/USD', timeout=5)
         res.raise_for_status()
         payload = res.json()
-        rate = payload.get('rates', {}).get('NGN')  # "rates" not "conversion_rates"
+        rate = payload.get('rates', {}).get('NGN')
         if rate:
             _rate_cache["value"] = rate
             _rate_cache["fetched_at"] = now
@@ -346,23 +234,20 @@ def get_naira_rate():
     except Exception as exc:
         logger.warning('Failed to fetch exchange rate: %s', exc)
 
-    # Live fetch failed. Return stale cache if available — a slightly old
-    # rate is far better than the hardcoded fallback.
     if cached:
         logger.info('Returning stale cached exchange rate.')
         return cached
 
-    # Absolute last resort: hardcoded fallback.
     logger.warning('Using hardcoded fallback exchange rate of 1500.')
     return 1500
 
 
-# --- INIT (Flask-Migrate handles schema; create_all only runs outside production) ---
+# --- INIT ---
 def init_db():
     if os.getenv('FLASK_ENV', 'production').lower() != 'production':
         with app.app_context():
             db.create_all()
-            logger.info('✅ Database tables created/verified.')
+            logger.info('Database tables created/verified.')
 
 init_db()
 
@@ -379,54 +264,45 @@ ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@example.com')
 if not PAYSTACK_SECRET:
     logger.warning('PAYSTACK_SECRET is not set. Paystack payments will be unavailable.')
 
-# --- GMAIL SMTP CONFIG ---
-# Add these three variables to your Railway environment variables:
+# --- BREVO SMTP CONFIG ---
+# These match the Railway environment variables you have already set:
 #
-#   GMAIL_USER         — the Gmail address you will send from, e.g. yourapp@gmail.com
-#   GMAIL_APP_PASSWORD — the 16-character App Password generated from your Google account.
-#                        How to get it:
-#                          1. Go to myaccount.google.com → Security
-#                          2. Turn on 2-Step Verification if it is not already on
-#                          3. Search "App Passwords" in the Security page search bar
-#                          4. Click App Passwords → choose Mail → Generate
-#                          5. Copy the 16-character password shown — that is this value
-#                        NOTE: this is NOT your normal Gmail login password.
-#   APP_BASE_URL       — your Railway public URL e.g. https://yourapp.up.railway.app
-#                        Used to build the clickable reset link in the email body.
-GMAIL_USER = os.getenv('GMAIL_USER')
-GMAIL_APP_PASSWORD = os.getenv('GMAIL_APP_PASSWORD')
-APP_BASE_URL = os.getenv('APP_BASE_URL', '').rstrip('/')
+#   MAIL_SERVER   = smtp-relay.brevo.com
+#   MAIL_PORT     = 587
+#   MAIL_USERNAME = your Brevo account email address
+#   MAIL_PASSWORD = your Brevo SMTP key
+#                   (Brevo dashboard → top-right account menu → SMTP & API
+#                    → SMTP tab → Generate a new SMTP key → copy it)
+#   APP_BASE_URL  = your Railway public URL e.g. https://yourapp.up.railway.app
+#
+# Brevo free plan: 300 emails/day, forever free, no credit card needed.
+MAIL_SERVER   = os.getenv('MAIL_SERVER', 'smtp-relay.brevo.com')
+MAIL_PORT     = int(os.getenv('MAIL_PORT', '587'))
+MAIL_USERNAME = os.getenv('MAIL_USERNAME')
+MAIL_PASSWORD = os.getenv('MAIL_PASSWORD')
+APP_BASE_URL  = os.getenv('APP_BASE_URL', '').rstrip('/')
 
-if not GMAIL_USER or not GMAIL_APP_PASSWORD:
-    logger.warning('GMAIL_USER or GMAIL_APP_PASSWORD not set. Password reset emails will be unavailable.')
+if not MAIL_USERNAME or not MAIL_PASSWORD:
+    logger.warning('MAIL_USERNAME or MAIL_PASSWORD not set. Password reset emails will be unavailable.')
 
 
 def send_reset_email(to_email: str, reset_url: str, user_name: str) -> bool:
     """
-    Sends a password reset email via Gmail SMTP using an App Password.
+    Sends a password reset email via Brevo SMTP.
     Uses Python's built-in smtplib — no extra packages needed.
-
     Returns True if sent successfully, False on any error.
     Errors are logged but never raised — a failed send must never crash the route.
-
-    Gmail SMTP settings:
-      Host : smtp.gmail.com
-      Port : 587  (STARTTLS — not SSL port 465)
-      Login: GMAIL_USER + GMAIL_APP_PASSWORD
-
-    The reset link expires in 1 hour, enforced server-side in /reset-password.
     """
-    if not GMAIL_USER or not GMAIL_APP_PASSWORD:
-        logger.error('Cannot send reset email: GMAIL_USER or GMAIL_APP_PASSWORD not configured.')
+    if not MAIL_USERNAME or not MAIL_PASSWORD:
+        logger.error('Cannot send reset email: MAIL_USERNAME or MAIL_PASSWORD not configured.')
         return False
 
     try:
         msg = MIMEMultipart('alternative')
         msg['Subject'] = 'Reset Your Password — Rewards'
-        msg['From'] = f'Rewards <{GMAIL_USER}>'
+        msg['From'] = f'Rewards <{MAIL_USERNAME}>'
         msg['To'] = to_email
 
-        # Plain-text fallback for email clients that do not render HTML
         text_body = (
             f"Hi {user_name},\n\n"
             f"You requested a password reset for your Rewards account.\n\n"
@@ -438,7 +314,6 @@ def send_reset_email(to_email: str, reset_url: str, user_name: str) -> bool:
             f"— The Rewards Team"
         )
 
-        # HTML version shown in modern email clients
         html_body = f"""
         <div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;
                     padding:24px;border:1px solid #e0e0e0;border-radius:10px;">
@@ -468,11 +343,13 @@ def send_reset_email(to_email: str, reset_url: str, user_name: str) -> bool:
         msg.attach(MIMEText(text_body, 'plain'))
         msg.attach(MIMEText(html_body, 'html'))
 
-        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+        # Uses MAIL_SERVER / MAIL_PORT from env vars — works with Brevo,
+        # or any other standard SMTP provider without changing this code.
+        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT) as server:
             server.ehlo()
-            server.starttls()       # Upgrade to encrypted connection
-            server.login(GMAIL_USER, GMAIL_APP_PASSWORD)
-            server.sendmail(GMAIL_USER, to_email, msg.as_string())
+            server.starttls()
+            server.login(MAIL_USERNAME, MAIL_PASSWORD)
+            server.sendmail(MAIL_USERNAME, to_email, msg.as_string())
 
         logger.info('Password reset email sent to %s', to_email)
         return True
@@ -549,29 +426,14 @@ def register():
         db.session.add(new_user)
         db.session.commit()
 
-        # -------------------------------------------------------------------
-        # CHANGE: ReferralHistory row created with earnings_usd=0.0 and
-        # status='Pending' instead of earnings_usd=0.50 and status='Active'.
-        #
-        # Problem in the original code:
-        #   The referral record was written with earnings_usd=0.50 at the moment
-        #   of registration, before the referred user had paid anything. This
-        #   meant the referral history page showed "$0.50 earned" for users who
-        #   signed up but never activated — misleading for the referrer.
-        #
-        # The fix:
-        #   We create the record now (so the relationship is tracked) but mark
-        #   the earnings as 0.0 and the status as 'Pending'. The actual $0.50
-        #   credit is applied in /verify once Paystack confirms the payment.
-        # -------------------------------------------------------------------
         if referred_by:
             referrer = User.query.filter_by(referral_code=referred_by).first()
             if referrer:
                 referral_rec = ReferralHistory(
                     referrer_id=referrer.id,
                     referred_user_id=new_user.id,
-                    earnings_usd=0.0,    # Not earned yet — user hasn't paid
-                    status='Pending'     # Will become 'Active' after payment is verified
+                    earnings_usd=0.0,
+                    status='Pending'
                 )
                 db.session.add(referral_rec)
                 db.session.commit()
@@ -598,33 +460,12 @@ def login():
             login_user(user)
             return redirect(url_for('dashboard'))
 
-        # Using a generic message here intentionally — returning different messages
-        # for "email not found" vs "wrong password" would let an attacker enumerate
-        # which emails are registered in the system (user enumeration attack).
         flash('Invalid login details.')
     return render_template('login.html')
 
 @app.route('/dashboard')
 @login_required
 def dashboard():
-    # -------------------------------------------------------------------
-    # CHANGE: Run the daily chances reset here, at dashboard load time.
-    #
-    # Problem:
-    #   Previously the reset only ran inside /get-question and /check-answer,
-    #   meaning the dashboard template rendered whatever stale value was in the
-    #   DB — typically 0 from the day before. Users logging in the next morning
-    #   would see "0 chances" and think they had none, because the reset hadn't
-    #   fired yet. They had to click "Start Trivia" first to trigger it.
-    #
-    # The fix:
-    #   Call maybe_reset_daily_chances() right here before the template renders.
-    #   If it's a new day, chances are updated and committed so the template
-    #   receives the correct fresh value. If it's the same day, the helper does
-    #   nothing (returns False) and we skip the commit — zero extra DB cost.
-    #   This means the number the user sees the moment they log in is always
-    #   accurate, with no interaction required.
-    # -------------------------------------------------------------------
     maybe_reset_daily_chances(current_user)
     db.session.commit()
 
@@ -651,24 +492,6 @@ def dashboard():
 @app.route('/get-chances')
 @login_required
 def get_chances():
-    # -------------------------------------------------------------------
-    # CHANGE: New lightweight endpoint the dashboard JS calls on page load
-    # and on tab visibility change.
-    #
-    # Why this exists alongside the dashboard-route fix above:
-    #   The dashboard route fix handles the initial page render — the number
-    #   in the HTML will always be correct when the page first loads.
-    #   This endpoint handles a second edge case: a user who leaves the
-    #   dashboard tab open overnight. The page was rendered yesterday with
-    #   the correct count, but midnight passed and the tab was never refreshed.
-    #   The JS listens for the browser's visibilitychange event and calls this
-    #   endpoint when the user returns to the tab, updating the counter live
-    #   without requiring a full page reload.
-    #
-    #   It runs the same reset helper so calling it is always safe — if the
-    #   reset already happened today, maybe_reset_daily_chances() returns False
-    #   and no commit is issued.
-    # -------------------------------------------------------------------
     maybe_reset_daily_chances(current_user)
     db.session.commit()
     db.session.refresh(current_user)
@@ -764,21 +587,6 @@ def verify_payment():
 
     data = res.get('data', {})
     if res.get('status') and data.get('status') == 'success':
-        # -------------------------------------------------------------------
-        # CHANGE: Guard against double-activation.
-        #
-        # Problem in the original code:
-        #   There was no check on whether the user was already active before
-        #   crediting the referrer. If a user or browser re-requested the
-        #   /verify URL with the same Paystack reference (e.g. hitting back,
-        #   refreshing, or a network retry), the referrer's balance would be
-        #   incremented a second time for the same payment.
-        #
-        # The fix:
-        #   We only apply changes if is_active_member is currently False.
-        #   Once it's True, any further calls to /verify for this user are
-        #   silently ignored with an "already active" flash message.
-        # -------------------------------------------------------------------
         if not current_user.is_active_member:
             current_user.is_active_member = True
             if current_user.referred_by:
@@ -789,15 +597,8 @@ def verify_payment():
                         referred_user_id=current_user.id
                     ).first()
                     if referral_rec:
-                        # Payment confirmed — set real earnings and mark Active.
-                        # This pairs with the 0.0 / 'Pending' written in /register.
                         referral_rec.earnings_usd = 0.50
                         referral_rec.status = 'Active'
-                    # Immediately upgrade the referrer's chances to unlimited.
-                    # The referral is now Active so has_referral_today() will
-                    # return True for the referrer. We call maybe_reset_daily_chances
-                    # so the upgrade fires right now in this same request — the
-                    # referrer does not have to reload their dashboard to see it.
                     maybe_reset_daily_chances(referrer)
             db.session.commit()
             flash('Account Activated!')
@@ -815,53 +616,20 @@ def verify_payment():
 @app.route('/get-question')
 @login_required
 def get_question():
-    # -------------------------------------------------------------------
-    # CHANGE: Rewrote this entire route to fix three separate bugs.
-    #
-    # Bug 1 — missing db.session.refresh():
-    #   After maybe_reset_daily_chances() mutates user.chances and we call
-    #   db.session.commit(), SQLAlchemy's identity map can still hold the
-    #   OLD in-memory value of current_user.chances. Without explicitly
-    #   refreshing, the `if current_user.chances <= 0` check below could
-    #   read stale data and let a user with 0 chances through.
-    #   db.session.refresh(current_user) forces a re-read from the DB.
-    #
-    # Bug 2 — no retry on already-answered questions:
-    #   The original code picked one random question, then returned
-    #   "already_answered" if it had been won. The user had to click again
-    #   and hope the next random pick was unanswered. The new loop tries up
-    #   to 5 different questions before giving up, so users almost never
-    #   see a dead-end response on their first click.
-    #
-    # Bug 3 — frontend had no way to display remaining chances:
-    #   The response now includes "chances_remaining" so the frontend can
-    #   update a counter (e.g. "3 chances left today") without a separate
-    #   API call.
-    # -------------------------------------------------------------------
-
-    # Step 1: Reset daily chances if it's a new UTC day, then commit and
-    # refresh so current_user.chances reflects the actual DB value.
     maybe_reset_daily_chances(current_user)
     db.session.commit()
-    db.session.refresh(current_user)  # <-- critical: re-reads chances from DB
+    db.session.refresh(current_user)
 
-    # Step 2: Gate check — refuse to serve a question if chances are exhausted.
-    # This prevents the frontend from receiving a question the user can't answer.
     if current_user.chances <= 0:
         return jsonify({
             "status": "no_chances",
             "message": "You have used all your chances for today. Come back tomorrow!"
         })
 
-    # Step 3: Fetch only question IDs from the DB (not full rows) so we don't
-    # load the entire questions table into memory on every request.
     question_ids = db.session.query(Question.id).all()
     if not question_ids:
         return jsonify({"status": "error", "message": "No questions available right now."})
 
-    # Step 4: Try up to 5 random picks to find a question that hasn't been
-    # correctly answered yet. Capped at 5 attempts to avoid an infinite loop
-    # in the edge case where nearly all questions have been won.
     q = None
     for _ in range(5):
         q_id = random.choice(question_ids)[0]
@@ -874,21 +642,15 @@ def get_question():
             break
 
     if q is None:
-        # All sampled questions were already answered — tell the frontend.
         return jsonify({
             "status": "all_answered",
             "message": "All questions have been answered today. Check back later!"
         })
 
-    # NOTE: We do NOT deduct a chance here. Chances are only deducted in
-    # /check-answer when the user actually submits a response. This means a
-    # page refresh or accidental load of /get-question never wastes a chance.
     return jsonify({
         "id": q.id,
         "question": q.text,
         "options": {"A": q.option_a, "B": q.option_b, "C": q.option_c, "D": q.option_d},
-        # Show "unlimited" string if the user has referral-boosted chances,
-        # otherwise show the integer so the frontend can display a countdown.
         "chances_remaining": current_user.chances if current_user.chances < UNLIMITED_CHANCES else "unlimited"
     })
 
@@ -896,26 +658,7 @@ def get_question():
 @app.route('/check-answer', methods=['POST'])
 @login_required
 def check_answer():
-    # -------------------------------------------------------------------
-    # CHANGE: Rewrote this route to fix three bugs.
-    #
-    # Bug 1 — missing input validation:
-    #   The original code called data.get('question_id') without first
-    #   checking that `data` was not None. If the request body wasn't valid
-    #   JSON, this would raise an AttributeError. We now validate the
-    #   request payload before touching it.
-    #
-    # Bug 2 — missing db.session.refresh() (same as in /get-question):
-    #   After committing the daily reset we must refresh current_user so the
-    #   chances check below reads the real DB value, not a stale cached one.
-    #
-    # Bug 3 — chances_remaining added to every response:
-    #   Every JSON response now includes chances_remaining so the frontend
-    #   can update its display after each submission without a separate call.
-    # -------------------------------------------------------------------
-
     data = request.json
-    # Validate that the request body exists and has the required fields.
     if not data or 'question_id' not in data or 'choice' not in data:
         return jsonify({"status": "error", "message": "Invalid request."})
 
@@ -923,31 +666,25 @@ def check_answer():
     if not question:
         return jsonify({"status": "error", "message": "Question not found."})
 
-    # Guard: if anyone has already answered this question correctly, reject
-    # immediately — no point deducting a chance for an unwinnable question.
     answered_correct = AnsweredQuestion.query.filter_by(
         question_id=question.id, is_correct=True
     ).first()
     if answered_correct:
         return jsonify({"status": "already_answered", "message": "This question has already been answered."})
 
-    # Reset daily chances if needed, then refresh to get the live DB value.
     maybe_reset_daily_chances(current_user)
     db.session.commit()
-    db.session.refresh(current_user)  # <-- critical: re-reads chances from DB
+    db.session.refresh(current_user)
 
-    # Gate: user must have at least 1 chance remaining to submit.
     if current_user.chances <= 0:
         return jsonify({
             "status": "no_chances",
             "message": "You have no chances remaining for today. Come back tomorrow!"
         })
 
-    # Deduct one chance. Users with UNLIMITED_CHANCES (referral bonus) are exempt.
     if current_user.chances < UNLIMITED_CHANCES:
         current_user.chances -= 1
 
-    # Evaluate the answer.
     is_correct = data.get('choice') == question.correct_answer
     answer_record = AnsweredQuestion(
         question_id=question.id,
@@ -957,25 +694,9 @@ def check_answer():
     )
     db.session.add(answer_record)
 
-    # Calculate what to show the frontend for remaining chances.
     chances_left = current_user.chances if current_user.chances < UNLIMITED_CHANCES else "unlimited"
 
     if is_correct:
-        # -------------------------------------------------------------------
-        # CHANGE: Added SELECT FOR UPDATE (row-level lock) on the PIN query.
-        #
-        # Problem in the original code:
-        #   Two users answering correctly at almost the same moment could both
-        #   execute `filter_by(is_used=False).first()` before either one had
-        #   committed, causing both transactions to see the same unused PIN and
-        #   award it to two different people.
-        #
-        # The fix:
-        #   .with_for_update() appends "FOR UPDATE" to the SQL SELECT, which
-        #   tells Postgres to lock the chosen row. Any other transaction that
-        #   tries to SELECT the same row will block until we commit, guaranteeing
-        #   only one winner can claim each PIN.
-        # -------------------------------------------------------------------
         pin = RechargeCard.query.filter_by(is_used=False).with_for_update().first()
 
         if not pin:
@@ -1053,16 +774,6 @@ def request_payout():
 
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
-    """
-    Step 1 of password reset: user enters their WhatsApp number.
-
-    On POST:
-      - Look up the WhatsApp number in the DB.
-      - If found: delete old tokens, create a new 1-hour token, send the
-        reset link via WhatsApp.
-      - Always show the same success message whether or not the number
-        exists — prevents user enumeration.
-    """
     if request.method == 'POST':
         email = request.form.get('email', '').strip().lower()
 
@@ -1072,11 +783,8 @@ def forgot_password():
 
         user = User.query.filter_by(email=email).first()
         if user:
-            # Delete any existing unused tokens — old links are immediately
-            # invalidated when a new reset is requested.
             PasswordResetToken.query.filter_by(user_id=user.id).delete()
 
-            # Create a fresh token expiring in 1 hour.
             token_value = uuid.uuid4().hex + uuid.uuid4().hex  # 64-char hex
             expires_at = datetime.utcnow() + timedelta(hours=1)
             reset_token = PasswordResetToken(
@@ -1092,7 +800,6 @@ def forgot_password():
             if not sent:
                 logger.error('Reset email failed for user id=%s', user.id)
 
-        # Same message whether the email was found or not — prevents enumeration.
         flash('If that email is registered, a reset link has been sent. Check your inbox (and spam folder).')
         return redirect(url_for('login'))
 
@@ -1101,22 +808,9 @@ def forgot_password():
 
 @app.route('/reset-password/<token>', methods=['GET', 'POST'])
 def reset_password(token):
-    """
-    Step 2 of the reset flow: user arrives via the emailed link and sets
-    a new password.
-
-    Security checks:
-      - Token must exist in the DB.
-      - Token must not have expired (1-hour window).
-      - Token is deleted immediately after a successful reset so it cannot
-        be reused (even if someone intercepts it from browser history).
-      - New password must be at least 6 characters (same rule as registration).
-    """
     reset_token = PasswordResetToken.query.filter_by(token=token).first()
 
-    # Validate the token exists and has not expired.
     if not reset_token or reset_token.expires_at < datetime.utcnow():
-        # Delete the expired token from the DB to keep the table clean.
         if reset_token:
             db.session.delete(reset_token)
             db.session.commit()
@@ -1135,11 +829,9 @@ def reset_password(token):
             flash('Passwords do not match.')
             return redirect(url_for('reset_password', token=token))
 
-        # Update the password.
         user = reset_token.user
         user.password = generate_password_hash(new_password, method='pbkdf2:sha256')
 
-        # Delete the token so it cannot be reused.
         db.session.delete(reset_token)
         db.session.commit()
 
@@ -1147,7 +839,6 @@ def reset_password(token):
         flash('Your password has been reset. You can now log in with your new password.')
         return redirect(url_for('login'))
 
-    # GET request — show the form.
     return render_template('reset_password.html', token=token)
 
 
