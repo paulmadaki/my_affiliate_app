@@ -344,7 +344,7 @@ def send_reset_email(to_email: str, reset_url: str, user_name: str) -> bool:
         msg.attach(MIMEText(text_body, 'plain'))
         msg.attach(MIMEText(html_body, 'html'))
 
-        with smtplib.SMTP('smtp.gmail.com', 587) as server:
+        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT, timeout=10) as server:
             server.ehlo()
             server.starttls()
             server.login(MAIL_USERNAME, MAIL_PASSWORD)
