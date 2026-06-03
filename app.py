@@ -344,9 +344,11 @@ def send_reset_email(to_email: str, reset_url: str, user_name: str) -> bool:
         msg.attach(MIMEText(text_body, 'plain'))
         msg.attach(MIMEText(html_body, 'html'))
 
-        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT, timeout=10) as server:
-            server.ehlo()
-            server.starttls()
+        # FIXED: Increased timeout slightly to 15 seconds for production reliability 
+        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT, timeout=15) as server:
+            server.ehlo()          # Say hello to the email server
+            server.starttls()      # CRITICAL: Upgrade the connection to secure TLS encryption
+            server.ehlo()          # Say hello again over the now-encrypted channel
             server.login(MAIL_USERNAME, MAIL_PASSWORD)
             server.sendmail(MAIL_USERNAME, to_email, msg.as_string())
 
@@ -356,7 +358,6 @@ def send_reset_email(to_email: str, reset_url: str, user_name: str) -> bool:
     except Exception as exc:
         logger.exception('Failed to send reset email to %s: %s', to_email, exc)
         return False
-
 
 @app.after_request
 def set_security_headers(response):
