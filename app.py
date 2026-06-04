@@ -4,10 +4,6 @@ import re
 import uuid
 import requests
 import random
-import smtplib
-import threading
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, abort
@@ -17,6 +13,10 @@ from flask_wtf import CSRFProtect
 from flask_migrate import Migrate
 from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import generate_password_hash, check_password_hash
+
+# NOTE: smtplib, threading, MIMEText, MIMEMultipart are all removed.
+# Railway blocks outbound SMTP ports (465, 587, 2525) on Free and Hobby plans.
+# Resend uses HTTPS (port 443) which is never blocked — no SMTP needed at all.
 
 logging.basicConfig(
     level=logging.INFO,
@@ -133,9 +133,8 @@ class AnsweredQuestion(db.Model):
 
 
 class PasswordResetToken(db.Model):
-    # Stores one-time password reset tokens.
-    # Each token is a UUID hex string, tied to a user, with a 1-hour expiry.
-    # Token is deleted after use so it cannot be reused.
+    # Stores one-time password reset tokens tied to a user with a 1-hour expiry.
+    # Deleted after use so it cannot be reused.
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
     token = db.Column(db.String(64), unique=True, nullable=False)
@@ -189,7 +188,6 @@ def maybe_reset_daily_chances(user):
     today = datetime.utcnow().date()
     today_midnight = datetime(today.year, today.month, today.day, 0, 0, 0)
 
-    # --- Step 1: Date-based daily reset ---
     last_reset_date = None
     if user.last_chance_reset is not None:
         lr = user.last_chance_reset
@@ -202,7 +200,6 @@ def maybe_reset_daily_chances(user):
         user.last_chance_reset = today_midnight
         did_reset = True
 
-    # --- Step 2: Unlimited upgrade (every call, regardless of reset) ---
     if has_referral_today(user.id):
         user.chances = UNLIMITED_CHANCES
 
@@ -265,97 +262,114 @@ ADMIN_EMAIL = os.getenv('ADMIN_EMAIL', 'admin@example.com')
 if not PAYSTACK_SECRET:
     logger.warning('PAYSTACK_SECRET is not set. Paystack payments will be unavailable.')
 
-# --- BREVO SMTP CONFIG ---
-# These match the Railway environment variables you have already set:
-#
-#   MAIL_SERVER   = smtp-relay.brevo.com
-#   MAIL_PORT     = 587
-#   MAIL_USERNAME = your Brevo account email address
-#   MAIL_PASSWORD = your Brevo SMTP key
-#                   (Brevo dashboard → top-right account menu → SMTP & API
-#                    → SMTP tab → Generate a new SMTP key → copy it)
-#   APP_BASE_URL  = your Railway public URL e.g. https://yourapp.up.railway.app
-#
-# Brevo free plan: 300 emails/day, forever free, no credit card needed.
-MAIL_SERVER   = os.getenv('MAIL_SERVER', 'smtp-relay.brevo.com')
-MAIL_PORT     = int(os.getenv('MAIL_PORT', '587'))
-MAIL_USERNAME = os.getenv('MAIL_USERNAME')
-MAIL_PASSWORD = os.getenv('MAIL_PASSWORD')
-APP_BASE_URL  = os.getenv('APP_BASE_URL', '').rstrip('/')
 
-if not MAIL_USERNAME or not MAIL_PASSWORD:
-    logger.warning('MAIL_USERNAME or MAIL_PASSWORD not set. Password reset emails will be unavailable.')
+# --- RESEND EMAIL CONFIG ---
+# Railway blocks all outbound SMTP ports (465, 587, 2525) on Free and Hobby
+# plans. Resend uses HTTPS (port 443) which Railway never blocks.
+#
+# Railway environment variables to set:
+#   RESEND_API_KEY = re_xxxxxxxxxxxxxxxxxxxx   ← from resend.com → API Keys
+#   APP_BASE_URL   = https://yourapp.up.railway.app
+#
+# Setup (2 minutes, free, no credit card):
+#   1. Go to resend.com → Sign Up
+#   2. API Keys → Create API Key → copy it
+#   3. Add RESEND_API_KEY to Railway environment variables
+#
+# Free plan: 3,000 emails/month, 100/day.
+# Uses `requests` which is already in requirements.txt — no new packages needed.
+RESEND_API_KEY = os.getenv('RESEND_API_KEY')
+APP_BASE_URL   = os.getenv('APP_BASE_URL', '').rstrip('/')
+
+if not RESEND_API_KEY:
+    logger.warning('RESEND_API_KEY not set. Password reset emails will be unavailable.')
 
 
 def send_reset_email(to_email: str, reset_url: str, user_name: str) -> bool:
     """
-    Sends a password reset email via Brevo SMTP.
-    Uses Python's built-in smtplib — no extra packages needed.
-    Returns True if sent successfully, False on any error.
+    Sends a password reset email via the Resend HTTPS API.
+
+    Why Resend instead of SMTP:
+      Railway blocks outbound SMTP ports (465, 587, 2525) on Free and Hobby
+      plans to prevent abuse. Every SMTP provider — Gmail, Brevo, SendGrid —
+      will time out because Railway drops the TCP connection before it reaches
+      the mail server. Resend uses HTTPS (port 443) which is never blocked,
+      so it works on every Railway plan without any special configuration.
+
+    No background thread needed: the Resend API call takes ~200ms over HTTPS,
+    far faster than an SMTP handshake. Running it synchronously is fine.
+
+    Returns True on success, False on any error.
     Errors are logged but never raised — a failed send must never crash the route.
     """
-    if not MAIL_USERNAME or not MAIL_PASSWORD:
-        logger.error('Cannot send reset email: MAIL_USERNAME or MAIL_PASSWORD not configured.')
+    if not RESEND_API_KEY:
+        logger.error('Cannot send reset email: RESEND_API_KEY not configured.')
         return False
 
+    html_body = f"""
+    <div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;
+                padding:24px;border:1px solid #e0e0e0;border-radius:10px;">
+        <h2 style="color:#0d6efd;">Password Reset</h2>
+        <p>Hi <strong>{user_name}</strong>,</p>
+        <p>You requested a password reset for your <strong>Rewards</strong> account.</p>
+        <p>Click the button below to set a new password.
+           This link expires in <strong>1 hour</strong>.</p>
+        <a href="{reset_url}"
+           style="display:inline-block;margin:16px 0;padding:12px 28px;
+                  background:#0d6efd;color:#fff;text-decoration:none;
+                  border-radius:6px;font-weight:bold;">
+            Reset My Password
+        </a>
+        <p style="font-size:0.85rem;color:#888;">
+            If the button does not work, copy and paste this link into your browser:<br>
+            <a href="{reset_url}" style="color:#0d6efd;">{reset_url}</a>
+        </p>
+        <hr style="border:none;border-top:1px solid #eee;margin:20px 0;">
+        <p style="font-size:0.8rem;color:#aaa;">
+            If you did not request this, ignore this email.
+            Your password will not change.
+        </p>
+    </div>
+    """
+
+    text_body = (
+        f"Hi {user_name},\n\n"
+        f"You requested a password reset for your Rewards account.\n\n"
+        f"Click the link below to set a new password. "
+        f"This link expires in 1 hour:\n\n"
+        f"{reset_url}\n\n"
+        f"If you did not request this, you can safely ignore this email.\n\n"
+        f"— The Rewards Team"
+    )
+
     try:
-        msg = MIMEMultipart('alternative')
-        msg['Subject'] = 'Reset Your Password — Rewards'
-        msg['From'] = f'Rewards <{MAIL_USERNAME}>'
-        msg['To'] = to_email
-
-        text_body = (
-            f"Hi {user_name},\n\n"
-            f"You requested a password reset for your Rewards account.\n\n"
-            f"Click the link below to set a new password. "
-            f"This link expires in 1 hour:\n\n"
-            f"{reset_url}\n\n"
-            f"If you did not request this, you can safely ignore this email. "
-            f"Your password will not change unless you click the link above.\n\n"
-            f"— The Rewards Team"
+        response = requests.post(
+            'https://api.resend.com/emails',
+            headers={
+                'Authorization': f'Bearer {RESEND_API_KEY}',
+                'Content-Type': 'application/json',
+            },
+            json={
+                # 'onboarding@resend.dev' is Resend's shared sending domain —
+                # works immediately with no domain setup on the free plan.
+                # When ready to use your own domain, verify it in the Resend
+                # dashboard and change this to e.g. noreply@yourdomain.com
+                'from': 'Rewards <onboarding@resend.dev>',
+                'to': [to_email],
+                'subject': 'Reset Your Password — Rewards',
+                'html': html_body,
+                'text': text_body,
+            },
+            timeout=10
         )
-
-        html_body = f"""
-        <div style="font-family:Arial,sans-serif;max-width:520px;margin:auto;
-                    padding:24px;border:1px solid #e0e0e0;border-radius:10px;">
-            <h2 style="color:#0d6efd;">Password Reset</h2>
-            <p>Hi <strong>{user_name}</strong>,</p>
-            <p>You requested a password reset for your <strong>Rewards</strong> account.</p>
-            <p>Click the button below to set a new password.
-               This link expires in <strong>1 hour</strong>.</p>
-            <a href="{reset_url}"
-               style="display:inline-block;margin:16px 0;padding:12px 28px;
-                      background:#0d6efd;color:#fff;text-decoration:none;
-                      border-radius:6px;font-weight:bold;">
-                Reset My Password
-            </a>
-            <p style="font-size:0.85rem;color:#888;">
-                If the button does not work, copy and paste this link into your browser:<br>
-                <a href="{reset_url}" style="color:#0d6efd;">{reset_url}</a>
-            </p>
-            <hr style="border:none;border-top:1px solid #eee;margin:20px 0;">
-            <p style="font-size:0.8rem;color:#aaa;">
-                If you did not request this, ignore this email.
-                Your password will not change.
-            </p>
-        </div>
-        """
-
-        msg.attach(MIMEText(text_body, 'plain'))
-        msg.attach(MIMEText(html_body, 'html'))
-
-        # Changed to SMTP_SSL for Port 465 compatibility
-        with smtplib.SMTP_SSL(MAIL_SERVER, MAIL_PORT, timeout=15) as server:
-            server.ehlo()  # Identify your app
-            server.login(MAIL_USERNAME, MAIL_PASSWORD)
-            server.sendmail(MAIL_USERNAME, to_email, msg.as_string())
-
-        logger.info('Password reset email sent to %s', to_email)
+        response.raise_for_status()
+        logger.info('Password reset email sent to %s via Resend', to_email)
         return True
 
     except Exception as exc:
         logger.exception('Failed to send reset email to %s: %s', to_email, exc)
         return False
+
 
 @app.after_request
 def set_security_headers(response):
@@ -772,31 +786,18 @@ def request_payout():
 
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
-    """
-    Step 1 of password reset: user enters their WhatsApp number.
-
-    On POST:
-      - Look up the WhatsApp number in the DB.
-      - If found: delete old tokens, create a new 1-hour token, send the
-        reset link via WhatsApp.
-      - Always show the same success message whether or not the number
-        exists — prevents user enumeration.
-    """
     if request.method == 'POST':
         email = request.form.get('email', '').strip().lower()
         logger.info('Forgot-password request received for email: %s', email)
 
         if not email or not is_valid_email(email):
-            logger.warning('Forgot-password: invalid email format submitted: %s', email)
             flash('Please enter a valid email address.')
             return redirect(url_for('forgot_password'))
 
-        if not MAIL_USERNAME or not MAIL_PASSWORD:
-            # Email is not configured — log clearly and still return success
-            # so the user is not confused, but operators will see this in logs.
+        if not RESEND_API_KEY:
             logger.error(
-                'Forgot-password: MAIL_USERNAME or MAIL_PASSWORD not set. '
-                'Cannot send reset email. Configure these environment variables in Railway.'
+                'Forgot-password: RESEND_API_KEY not set. '
+                'Add it to Railway environment variables.'
             )
             flash('If that email is registered, a reset link has been sent. Check your inbox (and spam folder).')
             return redirect(url_for('login'))
@@ -809,11 +810,8 @@ def forgot_password():
             return redirect(url_for('login'))
 
         if user:
-            # Delete any existing unused tokens — old links are immediately
-            # invalidated when a new reset is requested.
             PasswordResetToken.query.filter_by(user_id=user.id).delete()
 
-            # Create a fresh token expiring in 1 hour.
             token_value = uuid.uuid4().hex + uuid.uuid4().hex  # 64-char hex
             expires_at = datetime.utcnow() + timedelta(hours=1)
             reset_token = PasswordResetToken(
@@ -826,34 +824,18 @@ def forgot_password():
 
             reset_url = f"{APP_BASE_URL}{url_for('reset_password', token=token_value)}"
 
-            # Fire the email in a background daemon thread so the HTTP response
-            # is returned immediately. SMTP is a blocking network call (connect,
-            # STARTTLS handshake, AUTH, DATA) that can take several seconds even
-            # when Gmail is healthy. Running it synchronously here is what caused
-            # the Gunicorn worker timeout — the worker was held for the full SMTP
-            # round-trip (or until the 10-second socket timeout on failure).
-            #
-            # daemon=True means the thread will not prevent the process from
-            # exiting if Railway restarts the container mid-flight. The worst
-            # case is one lost email on a deploy — acceptable.
-            def _send_in_background(to_email, url, name, uid):
-                logger.info('Forgot-password: background thread starting email send for user id=%s', uid)
-                sent = send_reset_email(to_email, url, name)
-                if sent:
-                    logger.info('Forgot-password: reset email delivered for user id=%s', uid)
-                else:
-                    logger.error('Forgot-password: reset email FAILED for user id=%s', uid)
-
-            t = threading.Thread(
-                target=_send_in_background,
-                args=(user.email, reset_url, user.full_name, user.id),
-                daemon=True,
-            )
-            t.start()
-            logger.info('Forgot-password: email thread started for user id=%s, returning response now.', user.id)
+            # Resend API is HTTPS — fast (~200ms), no thread needed.
+            # The old code used a background thread because SMTP was slow and
+            # blocking. That is no longer necessary.
+            sent = send_reset_email(user.email, reset_url, user.full_name)
+            if sent:
+                logger.info('Forgot-password: reset email delivered for user id=%s', user.id)
+            else:
+                logger.error('Forgot-password: reset email FAILED for user id=%s', user.id)
         else:
             logger.info('Forgot-password: no user found for email %s (returning generic message).', email)
 
+        # Same message whether found or not — prevents user enumeration.
         flash('If that email is registered, a reset link has been sent. Check your inbox (and spam folder).')
         return redirect(url_for('login'))
 
