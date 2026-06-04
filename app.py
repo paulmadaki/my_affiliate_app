@@ -366,6 +366,14 @@ def send_reset_email(to_email: str, reset_url: str, user_name: str) -> bool:
         logger.info('Password reset email sent to %s via Resend', to_email)
         return True
 
+    except requests.exceptions.HTTPError as exc:
+        try:
+            error_detail = exc.response.json()
+            logger.error('Resend API error for %s: %s', to_email, error_detail)
+        except:
+            logger.error('Resend API error for %s: %s', to_email, exc.response.text)
+        logger.exception('Failed to send reset email to %s', to_email)
+        return False
     except Exception as exc:
         logger.exception('Failed to send reset email to %s: %s', to_email, exc)
         return False
