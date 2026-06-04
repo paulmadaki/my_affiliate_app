@@ -344,11 +344,9 @@ def send_reset_email(to_email: str, reset_url: str, user_name: str) -> bool:
         msg.attach(MIMEText(text_body, 'plain'))
         msg.attach(MIMEText(html_body, 'html'))
 
-        # FIXED: Increased timeout slightly to 15 seconds for production reliability 
-        with smtplib.SMTP(MAIL_SERVER, MAIL_PORT, timeout=15) as server:
-            server.ehlo()          # Say hello to the email server
-            server.starttls()      # CRITICAL: Upgrade the connection to secure TLS encryption
-            server.ehlo()          # Say hello again over the now-encrypted channel
+        # Changed to SMTP_SSL for Port 465 compatibility
+        with smtplib.SMTP_SSL(MAIL_SERVER, MAIL_PORT, timeout=15) as server:
+            server.ehlo()  # Identify your app
             server.login(MAIL_USERNAME, MAIL_PASSWORD)
             server.sendmail(MAIL_USERNAME, to_email, msg.as_string())
 
