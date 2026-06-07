@@ -643,7 +643,7 @@ def get_question():
     if current_user.chances <= 0:
         return jsonify({
             "status": "no_chances",
-            "message": "You have used all your chances for today. Come back tomorrow!"
+            "message": "You have used all your chances for today. Come back tomorrow! or refer a friend to get unlimited chances for the day"
         })
 
     question_ids = db.session.query(Question.id).all()
