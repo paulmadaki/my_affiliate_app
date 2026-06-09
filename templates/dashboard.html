@@ -138,17 +138,18 @@
                 <h5 class="mb-3">Your Recent Answered Questions</h5>
                 {% if answered_records %}
                     <div class="table-responsive">
-                        <table class="table table-sm">
+                        <table class="table table-sm" id="answeredRecordTable">
                             <thead>
                                 <tr>
                                     <th scope="col">Question</th>
                                     <th scope="col">Status</th>
                                     <th scope="col">Answered At</th>
+                                    <th scope="col">Action</th>
                                 </tr>
                             </thead>
                             <tbody>
                                 {% for record in answered_records %}
-                                    <tr>
+                                    <tr id="answered-record-{{ record.id }}">
                                         <td>{{ record.question.text[:80] }}{% if record.question.text|length > 80 %}...{% endif %}</td>
                                         <td>
                                             {% if record.is_correct %}
@@ -158,6 +159,11 @@
                                             {% endif %}
                                         </td>
                                         <td>{{ record.answered_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                        <td>
+                                            <button type="button" class="btn btn-sm btn-outline-danger" onclick="deleteAnsweredQuestion({{ record.id }})">
+                                                Delete
+                                            </button>
+                                        </td>
                                     </tr>
                                 {% endfor %}
                             </tbody>
@@ -764,6 +770,36 @@ function showGameResult(title, htmlContent) {
     document.getElementById('game-result-body').innerHTML = htmlContent;
     const resultModal = new bootstrap.Modal(document.getElementById('gameResultModal'));
     resultModal.show();
+}
+
+async function deleteAnsweredQuestion(recordId) {
+    if (!confirm('Delete this answered question from your dashboard?')) {
+        return;
+    }
+
+    try {
+        const res = await fetch('/delete-answered-question', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': getCsrfToken()
+            },
+            body: JSON.stringify({ record_id: recordId })
+        });
+
+        const data = await res.json();
+        if (data.status === 'success') {
+            const row = document.getElementById(`answered-record-${recordId}`);
+            if (row) {
+                row.remove();
+            }
+            return;
+        }
+
+        alert('Could not delete answered question: ' + (data.message || 'Unknown error'));
+    } catch (err) {
+        alert('Could not delete answered question. Please try again.');
+    }
 }
 
 /*

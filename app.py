@@ -518,9 +518,30 @@ def get_chances():
 
     chances = current_user.chances
     return jsonify({
-        "chances": chances,
-        "display": "unlimited" if chances >= UNLIMITED_CHANCES else chances
+        'display': 'unlimited' if chances >= UNLIMITED_CHANCES else chances
     })
+
+
+@app.route('/delete-answered-question', methods=['POST'])
+@login_required
+def delete_answered_question():
+    data = request.json or {}
+    record_id = data.get('record_id')
+    if record_id is None:
+        return jsonify({"status": "error", "message": "Missing record id."}), 400
+
+    try:
+        record_id = int(record_id)
+    except (TypeError, ValueError):
+        return jsonify({"status": "error", "message": "Invalid record id."}), 400
+
+    record = db.session.get(AnsweredQuestion, record_id)
+    if not record or record.answered_by_id != current_user.id:
+        return jsonify({"status": "error", "message": "Answered question not found."}), 404
+
+    db.session.delete(record)
+    db.session.commit()
+    return jsonify({"status": "success", "message": "Answered question removed from your dashboard."})
 
 
 @app.route('/profile')
