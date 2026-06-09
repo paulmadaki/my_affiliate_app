@@ -483,7 +483,26 @@ const triviaModal = new bootstrap.Modal(document.getElementById('triviaModal'));
  * submitAns() and the payout form fetch use the same reliable source.
  */
 function getCsrfToken() {
-    return document.querySelector('meta[name="csrf-token"]').getAttribute('content');
+    const meta = document.querySelector('meta[name="csrf-token"]');
+    if (meta && meta.getAttribute('content')) {
+        return meta.getAttribute('content');
+    }
+
+    // Fallback: try to read a cookie named 'csrf_token'
+    try {
+        const name = 'csrf_token=';
+        const decoded = decodeURIComponent(document.cookie || '');
+        const parts = decoded.split('; ');
+        for (const part of parts) {
+            if (part.indexOf(name) === 0) {
+                return part.substring(name.length);
+            }
+        }
+    } catch (e) {
+        // ignore and return null below
+    }
+
+    return null;
 }
 
 /*
@@ -693,12 +712,17 @@ async function startTrivia() {
 async function submitAns(choice) {
     try {
         stopTimer();  // Stop the timer when answer is submitted
-        
+        const token = getCsrfToken();
+        if (!token) {
+            alert('CSRF token is missing. Please reload the page and try again.');
+            return;
+        }
+
         const res = await fetch('/check-answer', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': getCsrfToken()   // Read from <meta> tag
+                'X-CSRFToken': token   // Read from <meta> tag or cookie
             },
             body: JSON.stringify({ question_id: currentQuestionId, choice: choice })
         });
@@ -782,11 +806,17 @@ async function deleteAnsweredQuestion(recordId) {
     }
 
     try {
+        const token = getCsrfToken();
+        if (!token) {
+            alert('CSRF token is missing. Please reload the page and try again.');
+            return;
+        }
+
         const res = await fetch('/delete-answered-question', {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': getCsrfToken()
+                'X-CSRFToken': token
             },
             body: JSON.stringify({ record_id: recordId })
         });
