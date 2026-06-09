@@ -160,9 +160,13 @@
                                         </td>
                                         <td>{{ record.answered_at.strftime('%Y-%m-%d %H:%M') }}</td>
                                         <td>
-                                            <button type="button" class="btn btn-sm btn-outline-danger" onclick="deleteAnsweredQuestion({{ record.id }})">
-                                                Delete
-                                            </button>
+<button
+    type="button"
+    class="btn btn-sm btn-outline-danger"
+    data-record-id="{{ record.id }}"
+    onclick="deleteAnsweredQuestion(this)">
+    Delete
+</button>
                                         </td>
                                     </tr>
                                 {% endfor %}
@@ -323,7 +327,7 @@
                         <span class="display-6">4️⃣</span>
                     </div>
                     <h6 class="fw-bold">Refer & Earn</h6>
-                    <p class="small text-muted mb-0">Share your referral link. Earn <strong>$0.50</strong> for every person who signs up and activates their account through your link.</p>
+                    <p class="small text-muted mb-0">Share your referral link. Earn <strong>$0.50</strong> for every person who signs up and activates.</p>
                 </div>
             </div>
 
