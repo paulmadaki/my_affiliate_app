@@ -693,24 +693,6 @@ async function deleteAnsweredQuestion(rawRecordId) {
         alert("⚠️ Connection error. Could not reach the server.");
     }
 }
-        // Remove the row from the DOM
-        const row = document.getElementById(`answered-record-${recordId}`);
-        if (row) row.remove();
-
-        // FIX 5: If tbody is now empty, swap the table for the empty-state message.
-        const tbody = document.querySelector('#answeredRecordTable tbody');
-        if (tbody && tbody.querySelectorAll('tr').length === 0) {
-            const wrapper = document.getElementById('answeredTableWrapper');
-            if (wrapper) {
-                wrapper.outerHTML = '<p class="mb-0 text-muted">You haven\'t answered any questions yet.</p>';
-            }
-        }
-
-    /*} catch (err) {
-        alert('Could not delete answered question. Please try again.');
-    }
-}*/
-
 if (document.getElementById('payoutForm')) {
     document.getElementById('payoutForm').onsubmit = async (e) => {
         e.preventDefault();
