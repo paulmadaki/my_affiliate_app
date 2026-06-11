@@ -152,7 +152,7 @@
                                             <button
                                                 type="button"
                                                 class="btn btn-sm btn-outline-danger"
-                                                onclick="deleteAnsweredQuestion({{ record.id }})">
+                                                onclick="deleteAnsweredQuestion('{{ record.id }}')">
                                                 Delete
                                             </button>
                                         </td>
@@ -641,7 +641,14 @@ function showGameResult(title, htmlContent) {
  * FIX 5: After removing a row, if the tbody is empty the entire table is
  * replaced with the empty-state message so users don't see orphaned headers.
  */
-async function deleteAnsweredQuestion(recordId) {
+async function deleteAnsweredQuestion(rawRecordId) {
+    // 1. Safely convert the ID from a string to a clean integer
+    const recordId = parseInt(rawRecordId);
+    if (isNaN(recordId)) {
+        alert("⚠️ Invalid Record ID format.");
+        return;
+    }
+
     if (!confirm('Delete this answered question from your dashboard?')) return;
 
     try {
@@ -660,6 +667,32 @@ async function deleteAnsweredQuestion(recordId) {
             return;
         }
 
+        // 2. SUCCESS: Find the table row and fade it out smoothly
+        const row = document.getElementById(`answered-record-${recordId}`);
+        if (row) {
+            row.style.transition = 'all 0.3s ease';
+            row.style.opacity = '0';
+            
+            // Wait for the fade animation to finish, then completely delete the DOM element
+            setTimeout(() => {
+                row.remove();
+                
+                // 3. OPTIONAL: If the table is now empty, clean up the screen
+                const tbody = document.querySelector('#answeredRecordTable tbody');
+                if (tbody && tbody.children.length === 0) {
+                    const wrapper = document.getElementById('answeredTableWrapper');
+                    if (wrapper) {
+                        wrapper.innerHTML = '<p class="mb-0 text-muted">You haven\'t answered any questions yet.</p>';
+                    }
+                }
+            }, 300);
+        }
+
+    } catch (err) {
+        console.error("Delete failed:", err);
+        alert("⚠️ Connection error. Could not reach the server.");
+    }
+}
         // Remove the row from the DOM
         const row = document.getElementById(`answered-record-${recordId}`);
         if (row) row.remove();
@@ -673,10 +706,10 @@ async function deleteAnsweredQuestion(recordId) {
             }
         }
 
-    } catch (err) {
+    /*} catch (err) {
         alert('Could not delete answered question. Please try again.');
     }
-}
+}*/
 
 if (document.getElementById('payoutForm')) {
     document.getElementById('payoutForm').onsubmit = async (e) => {
