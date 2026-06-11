@@ -4,17 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Dashboard | {{ user.email }}</title>
-
-    <!--
-        CHANGE: Added a single CSRF meta tag in <head>.
-        This is the standard Flask-WTF pattern for AJAX requests — one place
-        to read the token from in JavaScript, rather than hunting for a hidden
-        input inside a form or relying on a bare input at the bottom of the page.
-        The old bare <input type="hidden" name="csrf_token"> at the bottom of
-        the body has been removed; this tag replaces it entirely.
-    -->
     <meta name="csrf-token" content="{{ csrf_token() }}">
-
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css" integrity="sha512-pVl7fK3sOlFj0+INRS0TtKXJ4JScK0kLkWvJsOK7o0EB9zuN04o6ZX1Gc3ZzD3i9jP8YjVi5h6y1G4Q5KpELKg==" crossorigin="anonymous" referrerpolicy="no-referrer" />
     <style>
@@ -27,7 +17,7 @@
         .dashboard-input { min-height: 56px; }
         .dashboard-card { border-radius: 18px; }
         .dashboard-action-title { font-size: 1.25rem; font-weight: 700; }
-        
+
         /* Timer styles */
         .timer-container { text-align: center; margin-bottom: 1.5rem; }
         .timer-display {
@@ -42,6 +32,7 @@
         .timer-display.danger { background-color: #f8d7da; color: #721c24; animation: pulse 0.5s infinite; }
         @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.7; } }
         .timer-label { font-size: 0.9rem; color: #666; margin-bottom: 0.3rem; }
+
         @media (max-width: 768px) {
             body { font-size: 1rem; }
             .container { padding-left: 0.8rem; padding-right: 0.8rem; }
@@ -84,7 +75,6 @@
 </nav>
 
 <div class="container">
-    <!-- FLASH MESSAGES -->
     {% with messages = get_flashed_messages() %}
       {% if messages %}
         {% for message in messages %}
@@ -94,7 +84,6 @@
     {% endwith %}
 
     <div class="row g-4">
-        <!-- BALANCE & STATS -->
         <div class="col-md-4">
             <div class="card stats-card shadow-sm p-4 text-center">
                 <h6 class="text-muted text-uppercase">Balance</h6>
@@ -106,13 +95,6 @@
         <div class="col-md-4">
             <div class="card stats-card shadow-sm p-4 text-center">
                 <h6 class="text-muted text-uppercase">Game Chances</h6>
-                <!--
-                    CHANGE: Added id="chancesCount" target for live JS updates.
-                    The backend now returns chances_remaining in every /check-answer
-                    response. The updateChancesDisplay() JS function reads that value
-                    and updates this element after each game, so the counter stays
-                    accurate without a full page reload.
-                -->
                 <h2 class="text-success" id="chancesCount">
                     {% if user.chances >= 999 %}Unlimited{% else %}{{ user.chances }}{% endif %}
                 </h2>
@@ -137,7 +119,7 @@
             <div class="card shadow-sm p-4 mb-4">
                 <h5 class="mb-3">Your Recent Answered Questions</h5>
                 {% if answered_records %}
-                    <div class="table-responsive">
+                    <div class="table-responsive" id="answeredTableWrapper">
                         <table class="table table-sm" id="answeredRecordTable">
                             <thead>
                                 <tr>
@@ -160,13 +142,19 @@
                                         </td>
                                         <td>{{ record.answered_at.strftime('%Y-%m-%d %H:%M') }}</td>
                                         <td>
-<button
-    type="button"
-    class="btn btn-sm btn-outline-danger"
-    data-record-id="{{ record.id }}"
-    onclick="deleteAnsweredQuestion(this)">
-    Delete
-</button>
+                                            <!--
+                                                FIX 1: Pass {{ record.id }} (an integer) directly,
+                                                not 'this' (the button DOM element).
+                                                The old code passed `this` which sent the button
+                                                object to the function instead of the record ID,
+                                                breaking both the fetch body and getElementById.
+                                            -->
+                                            <button
+                                                type="button"
+                                                class="btn btn-sm btn-outline-danger"
+                                                onclick="deleteAnsweredQuestion({{ record.id }})">
+                                                Delete
+                                            </button>
                                         </td>
                                     </tr>
                                 {% endfor %}
@@ -174,13 +162,12 @@
                         </table>
                     </div>
                 {% else %}
-                    <p class="mb-0 text-muted">You haven't answered any questions yet.</p>
+                    <p class="mb-0 text-muted" id="noAnswersMsg">You haven't answered any questions yet.</p>
                 {% endif %}
             </div>
         </div>
     </div>
 
-    <!-- MAIN ACTION AREA -->
     <div class="mt-4">
         {% if not user.is_active_member %}
             <div class="card border-warning p-4 text-center shadow-sm">
@@ -213,7 +200,6 @@
                         </div>
                     </div>
 
-                    <!-- WHATSAPP GROUP SECTION -->
                     <div class="card shadow-sm p-4 mt-4">
                         <h5>Join Our WhatsApp Community</h5>
                         <p class="text-muted small">Connect with other members, get updates, and share tips!</p>
@@ -224,12 +210,9 @@
                 </div>
 
                 <div class="col-md-5">
-                    <!-- WITHDRAWAL SECTION -->
                     {% if user.balance_usd >= 5.0 %}
                     <div class="card border-success shadow-sm p-4">
                         <h5 class="text-success"><i class="fas fa-money-bill-wave me-2"></i>Request Payout</h5>
-
-                        <!-- DEDUCTION BREAKDOWN -->
                         <div class="alert alert-info small mb-3">
                             <div class="d-flex justify-content-between mb-2">
                                 <span>Amount Requested:</span>
@@ -245,15 +228,6 @@
                                 <strong>$4.50</strong>
                             </div>
                         </div>
-
-                        <!--
-                            CHANGE: Removed the {{ csrf_token() }} call from inside this form.
-                            CSRF for this form is now handled via the X-CSRFToken request header
-                            sent by the fetch() call in the JS below, reading from the <meta>
-                            tag in <head>. Having both a hidden input AND a header would be
-                            redundant; the header-based approach works for all AJAX POSTs
-                            consistently, including /check-answer.
-                        -->
                         <form id="payoutForm">
                             <input type="text" name="bank_name" class="form-control mb-2" placeholder="Bank Name" required>
                             <input type="text" name="account_number" class="form-control mb-2" placeholder="Account Number" required>
@@ -275,131 +249,99 @@
         {% endif %}
     </div>
 
-    <!-- ============================================================
-         HOW IT WORKS SECTION
-         Placed below the main action area so it's visible to every
-         user — active and inactive alike. Inactive users can read it
-         while deciding whether to activate; active users can refer
-         back to it any time.
-    ============================================================ -->
     <div class="mt-5 mb-5">
         <div class="text-center mb-4">
             <h4 class="fw-bold">How This Platform Works</h4>
             <p class="text-muted">Everything you need to know to get the most out of Rewards</p>
         </div>
 
-        <!-- STEP-BY-STEP FLOW -->
         <div class="row g-3 mb-4">
-
             <div class="col-md-3 col-6">
                 <div class="card h-100 shadow-sm border-0 text-center p-3">
-                    <div class="mb-2">
-                        <span class="display-6">1️⃣</span>
-                    </div>
+                    <div class="mb-2"><span class="display-6">1️⃣</span></div>
                     <h6 class="fw-bold">Create Account</h6>
                     <p class="small text-muted mb-0">Sign up with your email, WhatsApp number, and location. It takes less than a minute.</p>
                 </div>
             </div>
-
             <div class="col-md-3 col-6">
                 <div class="card h-100 shadow-sm border-0 text-center p-3">
-                    <div class="mb-2">
-                        <span class="display-6">2️⃣</span>
-                    </div>
+                    <div class="mb-2"><span class="display-6">2️⃣</span></div>
                     <h6 class="fw-bold">Activate for $2</h6>
                     <p class="small text-muted mb-0">Pay a one-time activation fee of $2 (billed in Naira). This unlocks the game and withdrawal features.</p>
                 </div>
             </div>
-
             <div class="col-md-3 col-6">
                 <div class="card h-100 shadow-sm border-0 text-center p-3">
-                    <div class="mb-2">
-                        <span class="display-6">3️⃣</span>
-                    </div>
+                    <div class="mb-2"><span class="display-6">3️⃣</span></div>
                     <h6 class="fw-bold">Play Trivia Daily</h6>
                     <p class="small text-muted mb-0">You get <strong>5 free chances every day</strong> to answer trivia questions. Answer correctly and win an instant airtime PIN.</p>
                 </div>
             </div>
-
             <div class="col-md-3 col-6">
                 <div class="card h-100 shadow-sm border-0 text-center p-3">
-                    <div class="mb-2">
-                        <span class="display-6">4️⃣</span>
-                    </div>
+                    <div class="mb-2"><span class="display-6">4️⃣</span></div>
                     <h6 class="fw-bold">Refer & Earn</h6>
                     <p class="small text-muted mb-0">Share your referral link. Earn <strong>$0.50</strong> for every person who signs up and activates.</p>
                 </div>
             </div>
-
         </div>
 
-        <!-- DETAILED BREAKDOWN — accordion for clean mobile experience -->
         <div class="accordion shadow-sm" id="howItWorksAccordion">
-
             <div class="accordion-item border-0 mb-2 rounded">
                 <h2 class="accordion-header">
-                    <button class="accordion-button collapsed fw-semibold" type="button"
-                            data-bs-toggle="collapse" data-bs-target="#faq1">
+                    <button class="accordion-button collapsed fw-semibold" type="button" data-bs-toggle="collapse" data-bs-target="#faq1">
                         <i class="fas fa-gamepad text-success me-2"></i> How do the daily chances work?
                     </button>
                 </h2>
-                <div id="faq1" class="accordion-collapse collapse" >
+                <div id="faq1" class="accordion-collapse collapse">
                     <div class="accordion-body text-muted small">
                         Every day at midnight your chances automatically reset to <strong>5</strong>. Each time you submit an answer — whether correct or incorrect — one chance is used. When your chances reach zero, you must wait until the next day. Your chances counter at the top of this page always shows how many you have left for today.
                     </div>
                 </div>
             </div>
-
             <div class="accordion-item border-0 mb-2 rounded">
                 <h2 class="accordion-header">
-                    <button class="accordion-button collapsed fw-semibold" type="button"
-                            data-bs-toggle="collapse" data-bs-target="#faq2">
+                    <button class="accordion-button collapsed fw-semibold" type="button" data-bs-toggle="collapse" data-bs-target="#faq2">
                         <i class="fas fa-trophy text-warning me-2"></i> What do I win when I answer correctly?
                     </button>
                 </h2>
-                <div id="faq2" class="accordion-collapse collapse" >
+                <div id="faq2" class="accordion-collapse collapse">
                     <div class="accordion-body text-muted small">
-                        A correct answer earns you an <strong>instant airtime recharge PIN</strong>. The PIN is displayed on screen immediately — copy it and load it directly on your phone. Each question can only be won once across all users, so speed matters. Check the "Airtime Pins Available" badge on the game card before playing to know if prizes are still in stock.
+                        A correct answer earns you an <strong>instant airtime recharge PIN</strong>. The PIN is displayed on screen immediately — copy it and load it directly on your phone. Each question can only be won once across all users, so speed matters.
                     </div>
                 </div>
             </div>
-
             <div class="accordion-item border-0 mb-2 rounded">
                 <h2 class="accordion-header">
-                    <button class="accordion-button collapsed fw-semibold" type="button"
-                            data-bs-toggle="collapse" data-bs-target="#faq3">
+                    <button class="accordion-button collapsed fw-semibold" type="button" data-bs-toggle="collapse" data-bs-target="#faq3">
                         <i class="fas fa-users text-primary me-2"></i> How does the referral programme work?
                     </button>
                 </h2>
-                <div id="faq3" class="accordion-collapse collapse" >
+                <div id="faq3" class="accordion-collapse collapse">
                     <div class="accordion-body text-muted small">
-                        Copy your unique referral link from the dashboard and share it with friends. When someone signs up through your link <strong>and pays the $2 activation fee</strong>, you earn <strong>$0.50</strong> automatically added to your balance. There is no limit — the more people you refer who activate, the more you earn. Bonus: if you refer at least one person on any given day, you get <strong>unlimited game chances</strong> for that entire day.
+                        Copy your unique referral link and share it with friends. When someone signs up through your link <strong>and pays the $2 activation fee</strong>, you earn <strong>$0.50</strong> automatically added to your balance. Bonus: if you refer at least one person on any given day, you get <strong>unlimited game chances</strong> for that entire day.
                     </div>
                 </div>
             </div>
-
             <div class="accordion-item border-0 mb-2 rounded">
                 <h2 class="accordion-header">
-                    <button class="accordion-button collapsed fw-semibold" type="button"
-                            data-bs-toggle="collapse" data-bs-target="#faq4">
+                    <button class="accordion-button collapsed fw-semibold" type="button" data-bs-toggle="collapse" data-bs-target="#faq4">
                         <i class="fas fa-money-bill-wave text-success me-2"></i> How and when can I withdraw?
                     </button>
                 </h2>
-                <div id="faq4" class="accordion-collapse collapse" >
+                <div id="faq4" class="accordion-collapse collapse">
                     <div class="accordion-body text-muted small">
-                        Once your balance reaches <strong>$5.00</strong> the withdrawal section appears on your dashboard. Enter your bank name, account number, and account name, then submit the request. A <strong>10% processing fee</strong> is deducted, so a $5.00 withdrawal pays out $4.50. Requests are processed within <strong>24–48 hours</strong>. You can only have one pending withdrawal at a time — submit a new one after the current one is processed.
+                        Once your balance reaches <strong>$5.00</strong> the withdrawal section appears. A <strong>10% processing fee</strong> is deducted, so a $5.00 withdrawal pays out $4.50. Requests are processed within <strong>24–48 hours</strong>.
                     </div>
                 </div>
             </div>
-
             <div class="accordion-item border-0 mb-2 rounded">
                 <h2 class="accordion-header">
-                    <button class="accordion-button collapsed fw-semibold" type="button"
-                            data-bs-toggle="collapse" data-bs-target="#faq5">
+                    <button class="accordion-button collapsed fw-semibold" type="button" data-bs-toggle="collapse" data-bs-target="#faq5">
                         <i class="fas fa-circle-question text-info me-2"></i> Tips to maximise your earnings
                     </button>
                 </h2>
-                <div id="faq5" class="accordion-collapse collapse" >
+                <div id="faq5" class="accordion-collapse collapse">
                     <div class="accordion-body text-muted small">
                         <ul class="mb-0 ps-3">
                             <li class="mb-1"><strong>Refer at least one person daily</strong> to unlock unlimited game chances for that day.</li>
@@ -411,18 +353,10 @@
                     </div>
                 </div>
             </div>
-
         </div>
     </div>
 
 </div>
-
-<!--
-    CHANGE: Removed the old bare <input type="hidden" name="csrf_token"> that was
-    sitting outside all forms at the bottom of the body. It was fragile (no id,
-    outside any form) and is now fully replaced by the <meta name="csrf-token">
-    tag in <head>. All AJAX calls read from there via getCsrfToken().
--->
 
 <!-- TRIVIA MODAL -->
 <div class="modal fade" id="triviaModal" tabindex="-1" aria-hidden="true">
@@ -433,12 +367,10 @@
         <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
       </div>
       <div class="modal-body">
-        <!-- Timer Display -->
         <div class="timer-container">
           <div class="timer-label">Time Remaining</div>
           <div class="timer-display" id="timerDisplay">40s</div>
         </div>
-        
         <h5 id="qText" class="mb-4"></h5>
         <div class="list-group">
             <button class="list-group-item list-group-item-action quiz-option" id="optionA" onclick="submitAns('A')">A) <span id="optA"></span></button>
@@ -472,58 +404,45 @@
 let currentQuestionId = null;
 let timerInterval = null;
 let timeRemaining = 40;
-const TIMER_DURATION = 40; // 40 seconds per question
+const TIMER_DURATION = 40;
 const triviaModal = new bootstrap.Modal(document.getElementById('triviaModal'));
 
 /*
- * CHANGE: Single helper that reads the CSRF token from the <meta> tag in <head>.
- * Previously the token was grabbed inline inside submitAns() by querying a
- * hidden input — which broke if the input wasn't present (e.g. on inactive-user
- * view where the payout form is hidden). Centralising it here means both
- * submitAns() and the payout form fetch use the same reliable source.
+ * FIX 2: Stop the timer whenever the trivia modal closes for ANY reason —
+ * including when the user clicks the X button or clicks outside the modal.
+ * Without this listener, closing via X left the timer running silently;
+ * when it hit zero it fired showGameResult() and opened the result modal
+ * unexpectedly even though the trivia modal was already closed.
  */
+document.getElementById('triviaModal').addEventListener('hidden.bs.modal', () => {
+    stopTimer();
+});
+
 function getCsrfToken() {
     const meta = document.querySelector('meta[name="csrf-token"]');
     if (meta && meta.getAttribute('content')) {
         return meta.getAttribute('content');
     }
-
-    // Fallback: try to read a cookie named 'csrf_token'
     try {
         const name = 'csrf_token=';
         const decoded = decodeURIComponent(document.cookie || '');
-        const parts = decoded.split('; ');
-        for (const part of parts) {
-            if (part.indexOf(name) === 0) {
-                return part.substring(name.length);
-            }
+        for (const part of decoded.split('; ')) {
+            if (part.indexOf(name) === 0) return part.substring(name.length);
         }
-    } catch (e) {
-        // ignore and return null below
-    }
-
+    } catch (e) {}
     return null;
 }
 
-/*
- * Timer Management Functions
- */
 function startTimer() {
     timeRemaining = TIMER_DURATION;
     updateTimerDisplay();
-    
-    // Clear any existing timer
-    if (timerInterval) {
-        clearInterval(timerInterval);
-    }
-    
+    if (timerInterval) clearInterval(timerInterval);
     timerInterval = setInterval(() => {
         timeRemaining--;
         updateTimerDisplay();
-        
-        // Auto-submit when time reaches 0
         if (timeRemaining <= 0) {
             clearInterval(timerInterval);
+            timerInterval = null;
             handleTimerExpired();
         }
     }, 1000);
@@ -537,242 +456,157 @@ function stopTimer() {
 }
 
 function updateTimerDisplay() {
-    const timerDisplay = document.getElementById('timerDisplay');
-    if (!timerDisplay) return;
-    
-    timerDisplay.textContent = timeRemaining + 's';
-    
-    // Change color based on remaining time
+    const el = document.getElementById('timerDisplay');
+    if (!el) return;
+    el.textContent = timeRemaining + 's';
     if (timeRemaining <= 10) {
-        timerDisplay.className = 'timer-display danger';
+        el.className = 'timer-display danger';
     } else if (timeRemaining <= 20) {
-        timerDisplay.className = 'timer-display warning';
+        el.className = 'timer-display warning';
     } else {
-        timerDisplay.className = 'timer-display';
+        el.className = 'timer-display';
     }
 }
 
+/*
+ * FIX 3 & 4: handleTimerExpired — disable buttons FIRST, then call submitAns(null).
+ *
+ * FIX 4: Buttons are disabled before triviaModal.hide() is called.
+ *   triviaModal.hide() is asynchronous. Disabling after calling hide caused
+ *   a visible flash of the disabled state during the close animation.
+ *
+ * FIX 3: submitAns(null) is called instead of directly showing a result modal.
+ *   The old code showed a "Time's Up" message without ever calling /check-answer,
+ *   meaning the server never deducted a chance — users got a free retry every
+ *   time the timer ran out. Now submitAns(null) sends choice=null to the server,
+ *   which records it as 'TIMEOUT', deducts one chance, and returns a 'wrong'
+ *   response. The "Time's Up" message is shown by the wrong-status handler in
+ *   submitAns, which checks whether the server's message mentions timeout.
+ */
 function handleTimerExpired() {
-    // Disable all option buttons
-    document.getElementById('optionA').disabled = true;
-    document.getElementById('optionB').disabled = true;
-    document.getElementById('optionC').disabled = true;
-    document.getElementById('optionD').disabled = true;
-    
-    // Auto-submit with a blank/wrong answer
-    triviaModal.hide();
-    showGameResult("Time's Up! ⏰", `
-        <div class="text-center">
-            <i class="fas fa-hourglass-end text-danger mb-3" style="font-size: 3rem;"></i>
-            <p class="fw-bold">You ran out of time!</p>
-            <p class="small text-muted">The 40-second timer expired before you could answer.</p>
-        </div>
-    `);
+    // Disable buttons first — before the modal starts closing
+    ['optionA','optionB','optionC','optionD'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.disabled = true;
+    });
+    // Submit null choice to server so one chance is properly consumed
+    submitAns(null);
 }
 
-/*
- * CHANGE: Added updateChancesDisplay() to keep the Game Chances card in sync
- * after each answer. The backend now returns chances_remaining in every
- * /check-answer response. Previously the counter on screen only updated on a
- * full page reload, so users couldn't see their chances decreasing in real time.
- * This function reads the value from the response and updates #chancesCount.
- */
 function updateChancesDisplay(chancesRemaining) {
     const el = document.getElementById('chancesCount');
     if (!el) return;
     el.textContent = (chancesRemaining === 'unlimited') ? 'Unlimited' : chancesRemaining;
 }
 
-/*
- * CHANGE: Fetch fresh chances from /get-chances and update the counter.
- *
- * Called in two situations:
- *   1. On page load — as a safety net in case the server-side reset in the
- *      dashboard route ever lags (e.g. cached response from a CDN or proxy).
- *      In normal operation the template already renders the correct number,
- *      so this call will usually just confirm what's already on screen.
- *   2. On visibilitychange — when the user returns to a tab they left open
- *      overnight. The page was rendered yesterday with "0 chances", but the
- *      server-side reset hasn't fired because the dashboard route hasn't been
- *      re-requested. This call updates the counter live without a full reload.
- */
 async function refreshChancesFromServer() {
     try {
         const res = await fetch('/get-chances');
         if (!res.ok) return;
         const data = await res.json();
         updateChancesDisplay(data.display);
-    } catch (err) {
-        // Non-critical — if the call fails the displayed number is just stale.
-        // No alert needed; the user will see the correct number on next reload.
-    }
+    } catch (err) {}
 }
 
-// Call once immediately when the page finishes loading.
 refreshChancesFromServer();
-
-// Call again whenever the user returns to this tab after being away.
-// This is the key fix for the "left tab open overnight" edge case.
 document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible') {
-        refreshChancesFromServer();
-    }
+    if (document.visibilityState === 'visible') refreshChancesFromServer();
 });
 
 function copyLink() {
-    var copyText = document.getElementById("refLink");
-    copyText.select();
-    navigator.clipboard.writeText(copyText.value);
+    const el = document.getElementById("refLink");
+    el.select();
+    navigator.clipboard.writeText(el.value);
     alert("Referral link copied!");
 }
 
-/*
- * CHANGE: startTrivia() now handles all status values the backend can return,
- * not just 'error' and 'already_answered'.
- *
- * New statuses added in app.py:
- *   - 'no_chances'    → user has used all their daily attempts
- *   - 'all_answered'  → every question in the DB has been correctly answered
- *
- * Previously both of these fell into the generic else branch which called
- * showGameResult() — but the trivia modal was never opened at that point,
- * so triviaModal.hide() inside submitAns() would fail silently.
- *
- * Now startTrivia() shows a clean alert for any blocking status and only
- * opens the modal when a valid question is returned.
- *
- * Also wrapped in try/catch so a network failure shows a friendly error
- * instead of a silent broken state.
- * 
- * TIMER CHANGE: Calls startTimer() after opening the modal.
- */
 async function startTrivia() {
     try {
         const res = await fetch('/get-question');
         const data = await res.json();
 
-        if (data.status === 'no_chances') {
-            // User has exhausted today's daily attempts.
-            alert("⏰ " + data.message);
-            return;
-        }
+        if (data.status === 'no_chances') { alert("⏰ " + data.message); return; }
+        if (data.status === 'all_answered') { alert("✅ " + data.message); return; }
+        if (data.status === 'error') { alert("⚠️ " + data.message); return; }
 
-        if (data.status === 'all_answered') {
-            // Every question has already been won by someone today.
-            alert("✅ " + data.message);
-            return;
-        }
+        if (data.chances_remaining !== undefined) updateChancesDisplay(data.chances_remaining);
 
-        if (data.status === 'error') {
-            // Catch-all server-side error (e.g. no questions in DB at all).
-            alert("⚠️ " + data.message);
-            return;
-        }
-
-        // Update the chances display with the fresh value from the server.
-        // /get-question returns chances_remaining without deducting — this
-        // just keeps the display accurate after the daily reset fires.
-        if (data.chances_remaining !== undefined) {
-            updateChancesDisplay(data.chances_remaining);
-        }
-
-        // A valid question was returned — populate and open the modal.
         currentQuestionId = data.id;
         document.getElementById('qText').innerText = data.question;
         document.getElementById('optA').innerText = data.options.A;
         document.getElementById('optB').innerText = data.options.B;
         document.getElementById('optC').innerText = data.options.C;
         document.getElementById('optD').innerText = data.options.D;
-        
-        // Enable all option buttons
-        document.getElementById('optionA').disabled = false;
-        document.getElementById('optionB').disabled = false;
-        document.getElementById('optionC').disabled = false;
-        document.getElementById('optionD').disabled = false;
-        
+
+        // Re-enable all option buttons for this new question
+        ['optionA','optionB','optionC','optionD'].forEach(id => {
+            document.getElementById(id).disabled = false;
+        });
+
         triviaModal.show();
-        startTimer();  // Start the 40-second timer
+        startTimer();
 
     } catch (err) {
-        // Network failure or unexpected error — show a friendly message.
         alert("⚠️ Could not load question. Please check your connection and try again.");
     }
 }
 
 /*
- * CHANGE: submitAns() now:
- *   1. Reads the CSRF token from getCsrfToken() (meta tag) instead of a hidden input.
- *   2. Handles the new 'no_chances' status from /check-answer.
- *   3. Calls updateChancesDisplay() with chances_remaining from every response
- *      so the counter updates immediately after each answer.
- *   4. Wrapped in try/catch so a network failure doesn't leave the modal open
- *      with no feedback.
- *   5. Stops the timer before submitting the answer.
+ * submitAns now accepts null for timer-expiry submissions.
+ * When choice is null the server records it as TIMEOUT and returns 'wrong'
+ * with the message "Time's up — no answer submitted."
  */
 async function submitAns(choice) {
     try {
-        stopTimer();  // Stop the timer when answer is submitted
+        stopTimer();
         const token = getCsrfToken();
-        if (!token) {
-            alert('CSRF token is missing. Please reload the page and try again.');
-            return;
-        }
+        if (!token) { alert('CSRF token missing. Please reload the page.'); return; }
 
         const res = await fetch('/check-answer', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': token   // Read from <meta> tag or cookie
-            },
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': token },
             body: JSON.stringify({ question_id: currentQuestionId, choice: choice })
         });
 
         const data = await res.json();
         triviaModal.hide();
 
-        // Update the live chances counter from the server's authoritative value.
-        if (data.chances_remaining !== undefined) {
-            updateChancesDisplay(data.chances_remaining);
-        }
+        if (data.chances_remaining !== undefined) updateChancesDisplay(data.chances_remaining);
 
         if (data.status === 'no_chances') {
-            // Edge case: chances ran out between get-question and check-answer.
             showGameResult("No Chances Left ⏰", `
                 <div class="text-center">
-                    <i class="fas fa-clock text-warning mb-3" style="font-size: 3rem;"></i>
+                    <i class="fas fa-clock text-warning mb-3" style="font-size:3rem;"></i>
                     <p class="fw-bold">${data.message}</p>
-                </div>
-            `);
-        } else if (data.status === "correct_but_empty") {
+                </div>`);
+        } else if (data.status === 'correct_but_empty') {
             showGameResult("Great Job! 🌟", `
                 <div class="text-center">
-                    <i class="fas fa-exclamation-circle text-warning mb-3" style="font-size: 3rem;"></i>
+                    <i class="fas fa-exclamation-circle text-warning mb-3" style="font-size:3rem;"></i>
                     <p class="fw-bold">${data.message}</p>
-                    <p class="small text-muted">Your win has been recorded. Follow us on WhatsApp for restock updates!</p>
-                </div>
-            `);
-        } else if (data.status === "win") {
+                    <p class="small text-muted">Follow us on WhatsApp for restock updates!</p>
+                </div>`);
+        } else if (data.status === 'win') {
             showGameResult("You Won! 🏆", `
                 <div class="text-center">
-                    <i class="fas fa-trophy text-success mb-3" style="font-size: 3rem;"></i>
+                    <i class="fas fa-trophy text-success mb-3" style="font-size:3rem;"></i>
                     <p class="fw-bold">Congratulations! Your voucher code is:</p>
                     <p class="fs-5 fw-bold text-success">${data.pin}</p>
-                </div>
-            `);
-        } else if (data.status === "already_answered") {
+                </div>`);
+        } else if (data.status === 'already_answered') {
             showGameResult("Already Answered", `
                 <div class="text-center">
-                    <i class="fas fa-info-circle text-warning mb-3" style="font-size: 3rem;"></i>
+                    <i class="fas fa-info-circle text-warning mb-3" style="font-size:3rem;"></i>
                     <p class="fw-bold">${data.message}</p>
                     <p class="small text-muted">Try another question to continue.</p>
-                </div>
-            `);
+                </div>`);
         } else {
-            // 'wrong' status — or any unexpected status — shows the incorrect answer screen.
-            showGameResult("Incorrect Answer ❌", `
+            // 'wrong' covers both incorrect answers and timer expiry (choice=null)
+            const isTimeout = (choice === null);
+            showGameResult(isTimeout ? "Time's Up! ⏰" : "Incorrect Answer ❌", `
                 <div class="text-center">
-                    <i class="fas fa-circle-xmark text-danger mb-3" style="font-size: 3rem;"></i>
-                    <p class="fw-bold">${data.message}</p>
+                    <i class="fas fa-${isTimeout ? 'hourglass-end' : 'circle-xmark'} text-danger mb-3" style="font-size:3rem;"></i>
+                    <p class="fw-bold">${isTimeout ? "You ran out of time!" : data.message}</p>
                     <p class="small text-muted">
                         ${data.chances_remaining === 'unlimited'
                             ? 'You have unlimited chances today — try again!'
@@ -780,68 +614,70 @@ async function submitAns(choice) {
                                 ? `You have ${data.chances_remaining} chance(s) left today.`
                                 : 'You have no chances left today. Come back tomorrow!')}
                     </p>
-                </div>
-            `);
+                </div>`);
         }
 
     } catch (err) {
-        // Network failure — hide the modal and show a friendly error.
         triviaModal.hide();
-        stopTimer();  // Stop the timer on error
+        stopTimer();
         alert("⚠️ Could not submit answer. Please check your connection and try again.");
     }
 }
 
 function showGameResult(title, htmlContent) {
-    stopTimer();  // Ensure timer is stopped
+    stopTimer();
     document.getElementById('game-result-title').innerText = title;
     document.getElementById('game-result-body').innerHTML = htmlContent;
-    const resultModal = new bootstrap.Modal(document.getElementById('gameResultModal'));
-    resultModal.show();
+    new bootstrap.Modal(document.getElementById('gameResultModal')).show();
 }
 
+/*
+ * FIX 1: deleteAnsweredQuestion now receives a plain integer record ID,
+ * not a DOM element. The button in the template now passes {{ record.id }}
+ * directly: onclick="deleteAnsweredQuestion({{ record.id }})"
+ * The old code passed `this` (the button element) which meant recordId was
+ * a DOM element — it failed silently in the fetch body and getElementById.
+ *
+ * FIX 5: After removing a row, if the tbody is empty the entire table is
+ * replaced with the empty-state message so users don't see orphaned headers.
+ */
 async function deleteAnsweredQuestion(recordId) {
-    if (!confirm('Delete this answered question from your dashboard?')) {
-        return;
-    }
+    if (!confirm('Delete this answered question from your dashboard?')) return;
 
     try {
         const token = getCsrfToken();
-        if (!token) {
-            alert('CSRF token is missing. Please reload the page and try again.');
-            return;
-        }
+        if (!token) { alert('CSRF token missing. Please reload the page.'); return; }
 
         const res = await fetch('/delete-answered-question', {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-                'X-CSRFToken': token
-            },
+            headers: { 'Content-Type': 'application/json', 'X-CSRFToken': token },
             body: JSON.stringify({ record_id: recordId })
         });
 
         const data = await res.json();
-        if (data.status === 'success') {
-            const row = document.getElementById(`answered-record-${recordId}`);
-            if (row) {
-                row.remove();
-            }
+        if (data.status !== 'success') {
+            alert('Could not delete: ' + (data.message || 'Unknown error'));
             return;
         }
 
-        alert('Could not delete answered question: ' + (data.message || 'Unknown error'));
+        // Remove the row from the DOM
+        const row = document.getElementById(`answered-record-${recordId}`);
+        if (row) row.remove();
+
+        // FIX 5: If tbody is now empty, swap the table for the empty-state message.
+        const tbody = document.querySelector('#answeredRecordTable tbody');
+        if (tbody && tbody.querySelectorAll('tr').length === 0) {
+            const wrapper = document.getElementById('answeredTableWrapper');
+            if (wrapper) {
+                wrapper.outerHTML = '<p class="mb-0 text-muted">You haven\'t answered any questions yet.</p>';
+            }
+        }
+
     } catch (err) {
         alert('Could not delete answered question. Please try again.');
     }
 }
 
-/*
- * CHANGE: Payout form fetch now sends X-CSRFToken header (same as submitAns)
- * instead of relying on the hidden input inside FormData.
- * This makes CSRF handling consistent across all AJAX calls on the page and
- * removes the dependency on the hidden input field that was removed from the form.
- */
 if (document.getElementById('payoutForm')) {
     document.getElementById('payoutForm').onsubmit = async (e) => {
         e.preventDefault();
@@ -849,16 +685,13 @@ if (document.getElementById('payoutForm')) {
         try {
             const res = await fetch('/request-payout', {
                 method: 'POST',
-                headers: {
-                    'X-CSRFToken': getCsrfToken()
-                },
+                headers: { 'X-CSRFToken': getCsrfToken() },
                 body: formData
             });
             const data = await res.json();
-
             if (data.status === 'success') {
-                const details = data.details;
-                alert(`✓ Withdrawal request submitted!\n\nOriginal Amount: $${details.original_amount}\nFee (10%): -$${details.deduction_fee}\nYou will receive: $${details.net_amount}\n\nProcessing time: 24-48 hours`);
+                const d = data.details;
+                alert(`✓ Withdrawal request submitted!\n\nOriginal Amount: $${d.original_amount}\nFee (10%): -$${d.deduction_fee}\nYou will receive: $${d.net_amount}\n\nProcessing time: 24-48 hours`);
             } else {
                 alert(`❌ Error: ${data.message}`);
             }
