@@ -6,7 +6,7 @@ import requests
 import random
 from datetime import datetime, timedelta
 from dotenv import load_dotenv
-from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, abort
+from flask import Flask, render_template, request, redirect, url_for, jsonify, flash, abort, session
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import LoginManager, UserMixin, login_user, login_required, logout_user, current_user
 from flask_wtf import CSRFProtect
@@ -481,6 +481,7 @@ def login():
             return redirect(url_for('dashboard'))
 
         flash('Invalid login details.')
+    session.modified = True  # Force Flask to create a session so csrf_token() works
     return render_template('login.html')
 
 @app.route('/dashboard')
