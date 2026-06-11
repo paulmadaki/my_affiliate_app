@@ -633,8 +633,8 @@ function showGameResult(title, htmlContent) {
 
 /*
  * FIX 1: deleteAnsweredQuestion now receives a plain integer record ID,
- * not a DOM element. The button in the template now passes {{ record.id }}
- * directly: onclick="deleteAnsweredQuestion({{ record.id }})"
+ * not a DOM element. The button in the template now passes record.id
+ * directly: onclick="deleteAnsweredQuestion(record.id)"
  * The old code passed `this` (the button element) which meant recordId was
  * a DOM element — it failed silently in the fetch body and getElementById.
  *
