@@ -125,7 +125,7 @@
                                 <tr>
                                     <th scope="col">Question</th>
                                     <th scope="col">Status</th>
-                                    <th scope="col">Answered At</th>
+                                    <th scope="col">Answered At (WAT)</th>
                                     <th scope="col">Action</th>
                                 </tr>
                             </thead>
@@ -140,7 +140,7 @@
                                                 <span class="badge bg-danger">Incorrect</span>
                                             {% endif %}
                                         </td>
-                                        <td>{{ record.answered_at.strftime('%Y-%m-%d %H:%M') }}</td>
+                                        <td>{{ record.answered_at.strftime('%Y-%m-%d %H:%M') }} WAT</td>
                                         <td>
                                             <!--
                                                 FIX 1: Pass {{ record.id }} (an integer) directly,
