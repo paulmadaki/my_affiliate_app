@@ -550,6 +550,67 @@ def delete_answered_question():
 def profile():
     return render_template('profile.html', user=current_user)
 
+
+@app.route('/edit-profile', methods=['POST'])
+@login_required
+def edit_profile():
+    data = request.json or {}
+    full_name = data.get('full_name', '').strip()
+    whatsapp_number = data.get('whatsapp_number', '').strip()
+    location = data.get('location', '').strip()
+
+    if not full_name:
+        return jsonify({"status": "error", "message": "Full name is required."}), 400
+
+    if whatsapp_number and not is_valid_phone(whatsapp_number):
+        return jsonify({"status": "error", "message": "Invalid WhatsApp number format."}), 400
+
+    if location and len(location) < 5:
+        return jsonify({"status": "error", "message": "Location must be at least 5 characters (e.g., Country/State/City)."}), 400
+
+    try:
+        current_user.full_name = full_name
+        current_user.whatsapp_number = whatsapp_number if whatsapp_number else None
+        current_user.location = location if location else None
+        db.session.commit()
+        return jsonify({"status": "success", "message": "Profile updated successfully!"})
+    except Exception as exc:
+        logger.exception('Error updating profile: %s', exc)
+        return jsonify({"status": "error", "message": "An error occurred while updating your profile."}), 500
+
+
+@app.route('/change-password', methods=['POST'])
+@login_required
+def change_password():
+    data = request.json or {}
+    current_password = data.get('current_password', '')
+    new_password = data.get('new_password', '')
+    confirm_password = data.get('confirm_password', '')
+
+    if not current_password or not new_password or not confirm_password:
+        return jsonify({"status": "error", "message": "All fields are required."}), 400
+
+    if not check_password_hash(current_user.password, current_password):
+        return jsonify({"status": "error", "message": "Current password is incorrect."}), 401
+
+    if len(new_password) < 8:
+        return jsonify({"status": "error", "message": "New password must be at least 8 characters long."}), 400
+
+    if new_password != confirm_password:
+        return jsonify({"status": "error", "message": "New password and confirmation do not match."}), 400
+
+    if new_password == current_password:
+        return jsonify({"status": "error", "message": "New password must be different from current password."}), 400
+
+    try:
+        current_user.password = generate_password_hash(new_password, method='pbkdf2:sha256')
+        db.session.commit()
+        return jsonify({"status": "success", "message": "Password changed successfully!"})
+    except Exception as exc:
+        logger.exception('Error changing password: %s', exc)
+        return jsonify({"status": "error", "message": "An error occurred while changing your password."}), 500
+
+
 @app.route('/admin/questions')
 @login_required
 def admin_questions():
