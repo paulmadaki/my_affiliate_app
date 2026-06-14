@@ -240,6 +240,11 @@ def get_naira_rate():
     return 1500
 
 
+def convert_to_nigeria_time(utc_dt):
+    """Convert a UTC datetime to Nigeria's West Africa Time (WAT, UTC+1)."""
+    return utc_dt + timedelta(hours=1)
+
+
 # --- INIT ---
 def init_db():
     if os.getenv('FLASK_ENV', 'production').lower() != 'production':
@@ -499,6 +504,8 @@ def dashboard():
         .limit(5)
         .all()
     )
+    for record in answered_records:
+        record.answered_at = convert_to_nigeria_time(record.answered_at)
     referral_link = url_for('register', _external=True, ref=current_user.referral_code)
     return render_template(
         'dashboard.html',
