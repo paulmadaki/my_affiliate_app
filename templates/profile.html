@@ -143,6 +143,15 @@ function getCsrfToken() {
     if (meta && meta.getAttribute('content')) {
         return meta.getAttribute('content');
     }
+
+    const name = 'csrf_token=';
+    const decoded = decodeURIComponent(document.cookie || '');
+    const parts = decoded.split('; ');
+    for (const part of parts) {
+        if (part.indexOf(name) === 0) {
+            return part.substring(name.length);
+        }
+    }
     return null;
 }
 
@@ -162,9 +171,11 @@ async function submitEditProfile() {
     try {
         const res = await fetch('/edit-profile', {
             method: 'POST',
+            credentials: 'same-origin',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': token
+                'X-CSRFToken': token,
+                'X-CSRF-Token': token
             },
             body: JSON.stringify(formData)
         });
@@ -211,9 +222,11 @@ async function submitChangePassword() {
     try {
         const res = await fetch('/change-password', {
             method: 'POST',
+            credentials: 'same-origin',
             headers: {
                 'Content-Type': 'application/json',
-                'X-CSRFToken': token
+                'X-CSRFToken': token,
+                'X-CSRF-Token': token
             },
             body: JSON.stringify({
                 current_password: currentPassword,
