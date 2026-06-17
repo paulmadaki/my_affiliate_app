@@ -1114,6 +1114,166 @@ def api_exchange_rate():
     rate = get_naira_rate()
     return jsonify({"rate": rate, "amount_in_naira": round(2 * rate, 2)})
 
+
+# --- QUESTION MANAGEMENT API ---
+
+VALID_ANSWERS = {'a', 'b', 'c', 'd'}
+QUESTION_FIELDS = ('text', 'option_a', 'option_b', 'option_c', 'option_d', 'correct_answer')
+
+
+def _validate_question_payload(data: dict, index: int = None) -> str | None:
+    """
+    Validate a single question dict.  Returns an error string on failure,
+    or None when the payload is valid.  `index` is included in the message
+    for bulk requests so the caller knows which item failed.
+    """
+    prefix = f"Question {index}: " if index is not None else ""
+
+    for field in QUESTION_FIELDS:
+        value = data.get(field)
+        if not value or not str(value).strip():
+            return f"{prefix}'{field}' is required and must not be empty."
+
+    answer = str(data['correct_answer']).strip().lower()
+    if answer not in VALID_ANSWERS:
+        return (
+            f"{prefix}'correct_answer' must be one of 'a', 'b', 'c', 'd' "
+            f"(got '{data['correct_answer']}')."
+        )
+
+    return None
+
+
+@app.route('/api/questions', methods=['POST'])
+@csrf.exempt
+def api_add_question():
+    """
+    POST /api/questions
+    Insert a single quiz question.
+
+    Request body (JSON):
+        {
+            "text":           "Question text",
+            "option_a":       "First choice",
+            "option_b":       "Second choice",
+            "option_c":       "Third choice",
+            "option_d":       "Fourth choice",
+            "correct_answer": "a"   // case-insensitive: a/b/c/d
+        }
+
+    Responses:
+        201  {"status": "success", "message": "...", "question_id": <int>}
+        400  {"status": "error",   "message": "..."}
+        500  {"status": "error",   "message": "..."}
+    """
+    data = request.get_json(silent=True)
+    if not data or not isinstance(data, dict):
+        return jsonify({"status": "error", "message": "Request body must be a JSON object."}), 400
+
+    error = _validate_question_payload(data)
+    if error:
+        return jsonify({"status": "error", "message": error}), 400
+
+    try:
+        question = Question(
+            text=data['text'].strip(),
+            option_a=data['option_a'].strip(),
+            option_b=data['option_b'].strip(),
+            option_c=data['option_c'].strip(),
+            option_d=data['option_d'].strip(),
+            correct_answer=data['correct_answer'].strip().lower(),
+        )
+        db.session.add(question)
+        db.session.commit()
+        logger.info("Question inserted via API: id=%d text=%.60r", question.id, question.text)
+        return jsonify({
+            "status": "success",
+            "message": "Question inserted successfully.",
+            "question_id": question.id,
+        }), 201
+    except Exception as exc:
+        db.session.rollback()
+        logger.exception("Failed to insert question via API: %s", exc)
+        return jsonify({"status": "error", "message": "An error occurred while inserting the question."}), 500
+
+
+@app.route('/api/questions/bulk', methods=['POST'])
+@csrf.exempt
+def api_add_questions_bulk():
+    """
+    POST /api/questions/bulk
+    Insert multiple quiz questions in a single atomic transaction.
+    All questions are validated before any are written; if any question
+    fails validation the entire request is rejected with no DB changes.
+
+    Request body (JSON array):
+        [
+            {
+                "text":           "Question text",
+                "option_a":       "First choice",
+                "option_b":       "Second choice",
+                "option_c":       "Third choice",
+                "option_d":       "Fourth choice",
+                "correct_answer": "b"
+            },
+            ...
+        ]
+
+    Responses:
+        201  {"status": "success", "message": "...", "inserted_count": <int>}
+        400  {"status": "error",   "message": "..."}
+        500  {"status": "error",   "message": "..."}
+    """
+    data = request.get_json(silent=True)
+    if not data or not isinstance(data, list):
+        return jsonify({"status": "error", "message": "Request body must be a JSON array of question objects."}), 400
+
+    if len(data) == 0:
+        return jsonify({"status": "error", "message": "The questions array must not be empty."}), 400
+
+    # Validate every question before touching the database.
+    for idx, item in enumerate(data, start=1):
+        if not isinstance(item, dict):
+            return jsonify({
+                "status": "error",
+                "message": f"Question {idx}: each item must be a JSON object.",
+            }), 400
+
+        error = _validate_question_payload(item, index=idx)
+        if error:
+            return jsonify({"status": "error", "message": error}), 400
+
+    # All valid — insert inside a single transaction (all-or-nothing).
+    try:
+        questions = [
+            Question(
+                text=item['text'].strip(),
+                option_a=item['option_a'].strip(),
+                option_b=item['option_b'].strip(),
+                option_c=item['option_c'].strip(),
+                option_d=item['option_d'].strip(),
+                correct_answer=item['correct_answer'].strip().lower(),
+            )
+            for item in data
+        ]
+        db.session.add_all(questions)
+        db.session.commit()
+        inserted_ids = [q.id for q in questions]
+        logger.info(
+            "Bulk question insert via API: count=%d ids=%s",
+            len(questions),
+            inserted_ids,
+        )
+        return jsonify({
+            "status": "success",
+            "message": f"{len(questions)} question(s) inserted successfully.",
+            "inserted_count": len(questions),
+        }), 201
+    except Exception as exc:
+        db.session.rollback()
+        logger.exception("Failed to bulk-insert questions via API: %s", exc)
+        return jsonify({"status": "error", "message": "An error occurred while inserting questions."}), 500
+
 @app.route('/privacy')
 def privacy():
     return render_template('privacy.html')
