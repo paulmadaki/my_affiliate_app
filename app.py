@@ -81,6 +81,8 @@ class User(UserMixin, db.Model):
     is_active_member = db.Column(db.Boolean, default=False)
     whatsapp_number = db.Column(db.String(20), nullable=True)
     location = db.Column(db.String(255), nullable=True)
+    security_question = db.Column(db.String(255), nullable=True)
+    security_answer_hash = db.Column(db.String(255), nullable=True)
     created_at = db.Column(db.DateTime, default=db.func.now())
     last_chance_reset = db.Column(db.DateTime, default=db.func.now())
 
@@ -157,6 +159,10 @@ def is_valid_email(email: str) -> bool:
 
 def is_valid_phone(phone: str) -> bool:
     return bool(phone and PHONE_REGEX.match(phone.strip()))
+
+
+def normalize_answer(answer: str) -> str:
+    return answer.strip().lower()
 
 
 def generate_referral_code() -> str:
@@ -437,6 +443,25 @@ def register():
             flash('Please enter your location in the format Country/State/City.')
             return redirect(url_for('register'))
 
+        security_question = request.form.get('security_question', '').strip()
+        custom_security_question = request.form.get('custom_security_question', '').strip()
+        security_answer = request.form.get('security_answer', '').strip()
+
+        if security_question.lower() == 'other' and custom_security_question:
+            security_question = custom_security_question
+
+        if (security_question and not security_answer) or (security_answer and not security_question):
+            flash('Please provide both a recovery question and answer, or leave both blank.')
+            return redirect(url_for('register'))
+
+        if security_question and len(security_question) < 10:
+            flash('Recovery question should be at least 10 characters.')
+            return redirect(url_for('register'))
+
+        if security_answer and len(security_answer) < 3:
+            flash('Recovery answer should be at least 3 characters long.')
+            return redirect(url_for('register'))
+
         if referred_by and not User.query.filter_by(referral_code=referred_by).first():
             referred_by = None
 
@@ -447,7 +472,9 @@ def register():
             referral_code=generate_referral_code(),
             referred_by=referred_by,
             whatsapp_number=whatsapp_number,
-            location=location
+            location=location,
+            security_question=security_question if security_question else None,
+            security_answer_hash=generate_password_hash(normalize_answer(security_answer), method='pbkdf2:sha256') if security_answer else None
         )
         db.session.add(new_user)
         db.session.commit()
@@ -617,6 +644,36 @@ def change_password():
     except Exception as exc:
         logger.exception('Error changing password: %s', exc)
         return jsonify({"status": "error", "message": "An error occurred while changing your password."}), 500
+
+
+@app.route('/update-security-question', methods=['POST'])
+@login_required
+def update_security_question():
+    data = request.json or {}
+    security_question = data.get('security_question', '').strip()
+    custom_security_question = data.get('custom_security_question', '').strip()
+    security_answer = data.get('security_answer', '').strip()
+
+    if security_question.lower() == 'other' and custom_security_question:
+        security_question = custom_security_question
+
+    if not security_question or not security_answer:
+        return jsonify({"status": "error", "message": "A security question and answer are both required."}), 400
+
+    if len(security_question) < 10:
+        return jsonify({"status": "error", "message": "Recovery question should be at least 10 characters."}), 400
+
+    if len(security_answer) < 3:
+        return jsonify({"status": "error", "message": "Recovery answer should be at least 3 characters long."}), 400
+
+    try:
+        current_user.security_question = security_question
+        current_user.security_answer_hash = generate_password_hash(normalize_answer(security_answer), method='pbkdf2:sha256')
+        db.session.commit()
+        return jsonify({"status": "success", "message": "Recovery question saved successfully."})
+    except Exception as exc:
+        logger.exception('Error updating security question: %s', exc)
+        return jsonify({"status": "error", "message": "An error occurred while saving your recovery question."}), 500
 
 
 @app.route('/admin/questions')
@@ -975,6 +1032,63 @@ def reset_password(token):
         return redirect(url_for('login'))
 
     return render_template('reset_password.html', token=token)
+
+
+@app.route('/recover-security-question', methods=['GET', 'POST'])
+def recover_security_question():
+    step = 'email'
+    email = ''
+    security_question = None
+
+    if request.method == 'POST':
+        email = request.form.get('email', '').strip().lower()
+        security_answer = request.form.get('security_answer', '').strip()
+
+        if not email or not is_valid_email(email):
+            flash('Please enter a valid email address.')
+            return redirect(url_for('recover_security_question'))
+
+        user = User.query.filter_by(email=email).first()
+        if not user or not user.security_question:
+            flash('If that email is registered and has a recovery question configured, you will be guided to it.')
+            return redirect(url_for('login'))
+
+        if not security_answer:
+            security_question = user.security_question
+            step = 'question'
+            return render_template(
+                'recover_security_question.html',
+                step=step,
+                email=email,
+                question=security_question
+            )
+
+        if not user.security_answer_hash or not check_password_hash(user.security_answer_hash, normalize_answer(security_answer)):
+            flash('Your recovery answer is incorrect. Please try again.')
+            security_question = user.security_question
+            step = 'question'
+            return render_template(
+                'recover_security_question.html',
+                step=step,
+                email=email,
+                question=security_question
+            )
+
+        PasswordResetToken.query.filter_by(user_id=user.id).delete()
+        token_value = uuid.uuid4().hex + uuid.uuid4().hex
+        expires_at = datetime.utcnow() + timedelta(hours=1)
+        reset_token = PasswordResetToken(
+            user_id=user.id,
+            token=token_value,
+            expires_at=expires_at
+        )
+        db.session.add(reset_token)
+        db.session.commit()
+
+        flash('Answer accepted. Please choose a new password.')
+        return redirect(url_for('reset_password', token=token_value))
+
+    return render_template('recover_security_question.html', step=step, email=email)
 
 
 @app.route('/logout')

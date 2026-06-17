@@ -51,11 +51,17 @@
 
                     <dt class="col-sm-4">Member Status</dt>
                     <dd class="col-sm-8">{% if user.is_active_member %}<span class="badge bg-success">Active</span>{% else %}<span class="badge bg-secondary">Inactive</span>{% endif %}</dd>
+
+                    <dt class="col-sm-4">Recovery Question</dt>
+                    <dd class="col-sm-8">{{ user.security_question or 'Not set' }}</dd>
                 </dl>
 
                 <div class="mt-3 d-flex gap-2 flex-wrap">
                     <a href="/dashboard" class="btn btn-primary">Back to Dashboard</a>
                     <a href="/referral-history" class="btn btn-outline-secondary">Referral History</a>
+                    <button type="button" class="btn btn-info text-white" data-bs-toggle="modal" data-bs-target="#securityQuestionModal">
+                        <i class="fas fa-shield-alt me-1"></i>{% if user.security_question %}Update{% else %}Set{% endif %} Recovery Question
+                    </button>
                     <button type="button" class="btn btn-warning" data-bs-toggle="modal" data-bs-target="#editProfileModal">
                         <i class="fas fa-edit me-1"></i>Edit Profile
                     </button>
@@ -98,6 +104,46 @@
       <div class="modal-footer">
         <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
         <button type="button" class="btn btn-primary" onclick="submitEditProfile()">Save Changes</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- SECURITY QUESTION MODAL -->
+<div class="modal fade" id="securityQuestionModal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-dialog-centered">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">Set or Update Recovery Question</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <form id="securityQuestionForm">
+          <div class="mb-3">
+            <label for="securityQuestion" class="form-label">Recovery Question <span class="text-danger">*</span></label>
+            <select class="form-select" id="securityQuestion" name="security_question" onchange="toggleSecurityQuestionCustom()">
+              <option value="">Select a recovery question</option>
+              <option value="What is the name of your first school?">What is the name of your first school?</option>
+              <option value="What was the name of your childhood best friend?">What was the name of your childhood best friend?</option>
+              <option value="What is your mother's maiden name?">What is your mother's maiden name?</option>
+              <option value="What was the model of your first phone?">What was the model of your first phone?</option>
+              <option value="Other">Other (write a custom question)</option>
+            </select>
+          </div>
+          <div class="mb-3 d-none" id="securityQuestionCustomContainer">
+            <label for="securityQuestionCustom" class="form-label">Custom Question</label>
+            <input type="text" class="form-control" id="securityQuestionCustom" name="custom_security_question" placeholder="Enter your custom recovery question">
+          </div>
+          <div class="mb-3">
+            <label for="securityAnswer" class="form-label">Recovery Answer <span class="text-danger">*</span></label>
+            <input type="text" class="form-control" id="securityAnswer" name="security_answer" placeholder="Enter your recovery answer">
+            <small class="text-muted">This answer will allow you to reset your password if you've forgotten it.</small>
+          </div>
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" onclick="submitSecurityQuestion()">Save Recovery Question</button>
       </div>
     </div>
   </div>
@@ -268,6 +314,70 @@ async function submitChangePassword() {
         alert('Error: ' + (data.message || 'Could not change password'));
     } catch (err) {
         alert('Could not change password. Please check your connection and try again.');
+    }
+}
+
+function toggleSecurityQuestionCustom() {
+    const select = document.getElementById('securityQuestion');
+    const customContainer = document.getElementById('securityQuestionCustomContainer');
+    if (select.value === 'Other') {
+        customContainer.classList.remove('d-none');
+    } else {
+        customContainer.classList.add('d-none');
+    }
+}
+
+async function submitSecurityQuestion() {
+    const token = getCsrfToken();
+    if (!token) {
+        alert('CSRF token is missing. Please reload the page and try again.');
+        return;
+    }
+
+    const securityQuestionSelect = document.getElementById('securityQuestion');
+    let securityQuestion = securityQuestionSelect.value.trim();
+    const customQuestion = document.getElementById('securityQuestionCustom').value.trim();
+    const securityAnswer = document.getElementById('securityAnswer').value.trim();
+
+    if (securityQuestion === 'Other') {
+        securityQuestion = customQuestion;
+    }
+
+    if (!securityQuestion || securityQuestion.length < 10) {
+        alert('Please provide a recovery question with at least 10 characters.');
+        return;
+    }
+
+    if (!securityAnswer || securityAnswer.length < 3) {
+        alert('Security answer must be at least 3 characters long.');
+        return;
+    }
+
+    try {
+        const res = await fetch('/update-security-question', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-CSRFToken': token,
+                'X-CSRF-Token': token
+            },
+            body: JSON.stringify({
+                security_question: securityQuestion,
+                custom_security_question: customQuestion,
+                security_answer: securityAnswer
+            })
+        });
+
+        const data = await res.json();
+        if (data.status === 'success') {
+            alert('Recovery question saved successfully!');
+            location.reload();
+            return;
+        }
+        alert('Error: ' + (data.message || 'Could not save recovery question.'));
+    } catch (err) {
+        alert('Could not save recovery question. Please check your connection and try again.');
     }
 }
 </script>

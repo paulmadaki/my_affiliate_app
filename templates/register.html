@@ -89,6 +89,26 @@
                         </div>
                     </div>
                     <div class="mb-3">
+                        <label class="form-label fw-bold">Account Recovery Question</label>
+                        <select class="form-select" name="security_question" id="registerSecurityQuestion" onchange="toggleCustomQuestion()">
+                            <option value="">Select a recovery question (optional)</option>
+                            <option value="What is the name of your first school?">What is the name of your first school?</option>
+                            <option value="What was the name of your childhood best friend?">What was the name of your childhood best friend?</option>
+                            <option value="What is your mother's maiden name?">What is your mother's maiden name?</option>
+                            <option value="What was the model of your first phone?">What was the model of your first phone?</option>
+                            <option value="Other">Other (write a custom question)</option>
+                        </select>
+                    </div>
+                    <div class="mb-3 d-none" id="customQuestionContainer">
+                        <label class="form-label fw-bold">Custom Recovery Question</label>
+                        <input type="text" name="custom_security_question" id="customSecurityQuestion" class="form-control" placeholder="Enter a recovery question">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">Recovery Answer</label>
+                        <input type="text" name="security_answer" id="registerSecurityAnswer" class="form-control" placeholder="Enter your answer">
+                        <small class="text-muted">This answer will help you recover your account if you forget your password.</small>
+                    </div>
+                    <div class="mb-3">
                         <label class="form-label fw-bold">WhatsApp Number</label>
                         <div class="input-group">
                             <span class="input-group-text bg-white"><i class="fas fa-phone text-muted"></i></span>
@@ -217,7 +237,32 @@ function validateRegistration() {
         return false;
     }
 
+    const securityQuestion = document.getElementById('registerSecurityQuestion').value;
+    const customSecurityQuestion = document.getElementById('customSecurityQuestion').value.trim();
+    const securityAnswer = document.getElementById('registerSecurityAnswer').value.trim();
+
+    if (securityQuestion === 'Other' && customSecurityQuestion.length < 10) {
+        alert('Custom recovery question must be at least 10 characters long.');
+        return false;
+    }
+
+    if ((securityQuestion || customSecurityQuestion) && !securityAnswer) {
+        alert('Please enter a recovery answer for your security question.');
+        return false;
+    }
+
+    if (securityAnswer && securityAnswer.length < 3) {
+        alert('Recovery answer must be at least 3 characters long.');
+        return false;
+    }
+
     return true;
+}
+
+function toggleCustomQuestion() {
+    const select = document.getElementById('registerSecurityQuestion');
+    const customContainer = document.getElementById('customQuestionContainer');
+    customContainer.classList.toggle('d-none', select.value !== 'Other');
 }
 
 // Update exchange rate dynamically
