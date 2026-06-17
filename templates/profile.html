@@ -126,6 +126,12 @@
             <label for="confirmPassword" class="form-label">Confirm New Password <span class="text-danger">*</span></label>
             <input type="password" class="form-control" id="confirmPassword" name="confirm_password" required>
           </div>
+          <div class="form-check mb-3">
+            <input class="form-check-input" type="checkbox" id="showPasswordCheckbox" onclick="togglePasswordVisibility()">
+            <label class="form-check-label" for="showPasswordCheckbox">
+              Show password
+            </label>
+          </div>
         </form>
       </div>
       <div class="modal-footer">
@@ -153,6 +159,17 @@ function getCsrfToken() {
         }
     }
     return null;
+}
+
+function togglePasswordVisibility() {
+    const show = document.getElementById('showPasswordCheckbox').checked;
+    const type = show ? 'text' : 'password';
+    ['currentPassword', 'newPassword', 'confirmPassword'].forEach((id) => {
+        const field = document.getElementById(id);
+        if (field) {
+            field.type = type;
+        }
+    });
 }
 
 async function submitEditProfile() {
