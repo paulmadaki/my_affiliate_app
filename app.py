@@ -1122,5 +1122,9 @@ def privacy():
 def terms():
     return render_template('terms.html')
 
+@app.route('/support')
+def support():
+    return render_template('contact.html')
+
 if __name__ == "__main__":
     app.run()
