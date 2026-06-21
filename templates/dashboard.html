@@ -47,6 +47,22 @@
             .dashboard-action-title { font-size: 1.15rem; }
             .alert.alert-info.small, .alert.alert-secondary { font-size: 0.95rem; }
         }
+        
+        /* Full-screen loading overlay for trivia fetch */
+        #loadingOverlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(255,255,255,0.85);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 2000;
+            visibility: hidden;
+            opacity: 0;
+            transition: opacity 150ms ease-in-out, visibility 150ms ease-in-out;
+        }
+        #loadingOverlay.show { visibility: visible; opacity: 1; }
+        #loadingOverlay .spinner-text { font-weight: 700; margin-top: 0.75rem; }
     </style>
 </head>
 <body class="bg-light">
@@ -111,6 +127,14 @@
                     <span class="badge bg-danger">Inactive</span>
                 {% endif %}
             </div>
+        </div>
+    </div>
+
+    <!-- Loading overlay for trivia question fetch -->
+    <div id="loadingOverlay" role="status" aria-hidden="true">
+        <div class="text-center">
+            <div class="spinner-border text-primary" role="status" aria-hidden="true" style="width:3.2rem;height:3.2rem;"></div>
+            <div class="spinner-text">Loading your trivia question…</div>
         </div>
     </div>
 
@@ -520,14 +544,27 @@ function copyLink() {
     alert("Referral link copied!");
 }
 
+function showLoadingSpinner() {
+    const overlay = document.getElementById('loadingOverlay');
+    if (overlay) overlay.classList.add('show');
+}
+
+function hideLoadingSpinner() {
+    const overlay = document.getElementById('loadingOverlay');
+    if (overlay) overlay.classList.remove('show');
+}
+
 async function startTrivia() {
+    // Show centered loading spinner while fetching first question
+    showLoadingSpinner();
     try {
         const res = await fetch('/get-question');
         const data = await res.json();
 
-        if (data.status === 'no_chances') { alert("⏰ " + data.message); return; }
-        if (data.status === 'all_answered') { alert("✅ " + data.message); return; }
-        if (data.status === 'error') { alert("⚠️ " + data.message); return; }
+        // Hide spinner early for error-like responses
+        if (data.status === 'no_chances') { hideLoadingSpinner(); alert("⏰ " + data.message); return; }
+        if (data.status === 'all_answered') { hideLoadingSpinner(); alert("✅ " + data.message); return; }
+        if (data.status === 'error') { hideLoadingSpinner(); alert("⚠️ " + data.message); return; }
 
         if (data.chances_remaining !== undefined) updateChancesDisplay(data.chances_remaining);
 
@@ -540,13 +577,17 @@ async function startTrivia() {
 
         // Re-enable all option buttons for this new question
         ['optionA','optionB','optionC','optionD'].forEach(id => {
-            document.getElementById(id).disabled = false;
+            const el = document.getElementById(id);
+            if (el) el.disabled = false;
         });
 
+        // Question is ready — hide spinner and show modal
+        hideLoadingSpinner();
         triviaModal.show();
         startTimer();
 
     } catch (err) {
+        hideLoadingSpinner();
         alert("⚠️ Could not load question. Please check your connection and try again.");
     }
 }
