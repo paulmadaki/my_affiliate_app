@@ -694,7 +694,25 @@ def admin_questions():
             'answered_by': correct_answer.answered_by.email if correct_answer else None,
             'answered_at': correct_answer.answered_at if correct_answer else None
         })
-    return render_template('admin_questions.html', question_status=question_status)
+
+    total_cards = RechargeCard.query.count()
+    used_cards = RechargeCard.query.filter_by(is_used=True).count()
+    remaining_cards = total_cards - used_cards
+
+    total_questions = Question.query.count()
+    answered_questions = db.session.query(AnsweredQuestion.question_id).filter_by(is_correct=True).distinct().count()
+    unanswered_questions = total_questions - answered_questions
+
+    return render_template(
+        'admin_questions.html',
+        question_status=question_status,
+        total_cards=total_cards,
+        used_cards=used_cards,
+        remaining_cards=remaining_cards,
+        total_questions=total_questions,
+        answered_questions=answered_questions,
+        unanswered_questions=unanswered_questions
+    )
 
 @app.route('/pay')
 @login_required

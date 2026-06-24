@@ -19,6 +19,51 @@
 </nav>
 
 <div class="container">
+    <div class="row mb-4">
+        <div class="col-md-6 mb-3">
+            <div class="card shadow-sm p-4 h-100">
+                <h5 class="mb-3">Recharge Card Inventory</h5>
+                <table class="table table-borderless mb-0">
+                    <tbody>
+                        <tr>
+                            <th scope="row">Total cards</th>
+                            <td>{{ total_cards }}</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Cards won</th>
+                            <td>{{ used_cards }}</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Cards remaining</th>
+                            <td>{{ remaining_cards }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="col-md-6 mb-3">
+            <div class="card shadow-sm p-4 h-100">
+                <h5 class="mb-3">Question Bank Status</h5>
+                <table class="table table-borderless mb-0">
+                    <tbody>
+                        <tr>
+                            <th scope="row">Total questions</th>
+                            <td>{{ total_questions }}</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Questions answered</th>
+                            <td>{{ answered_questions }}</td>
+                        </tr>
+                        <tr>
+                            <th scope="row">Questions unanswered</th>
+                            <td>{{ unanswered_questions }}</td>
+                        </tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
     <div class="card shadow-sm p-4">
         <h4 class="mb-4">All Questions</h4>
         <div class="table-responsive">
