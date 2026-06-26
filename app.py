@@ -147,6 +147,20 @@ class PasswordResetToken(db.Model):
     user = db.relationship('User', backref=db.backref('reset_tokens', lazy=True))
 
 
+class PaymentTransaction(db.Model):
+    # Tracks Paystack transactions to verify payments even if session is lost.
+    # Allows users to complete payment verification without an active session.
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey('user.id'), nullable=False)
+    paystack_reference = db.Column(db.String(100), unique=True, nullable=False)
+    amount_kobo = db.Column(db.Integer, nullable=False)
+    status = db.Column(db.String(20), default='pending')  # pending, success, failed
+    created_at = db.Column(db.DateTime, default=db.func.now())
+    verified_at = db.Column(db.DateTime, nullable=True)
+
+    user = db.relationship('User', backref=db.backref('payment_transactions', lazy=True))
+
+
 # --- VALIDATION HELPERS ---
 
 EMAIL_REGEX = re.compile(r'^[^@\s]+@[^@\s]+\.[^@\s]+$')
@@ -738,8 +752,20 @@ def pay():
         r.raise_for_status()
         payload = r.json()
         authorization_url = payload.get('data', {}).get('authorization_url')
-        if not authorization_url:
-            raise ValueError('Missing Paystack authorization URL')
+        reference = payload.get('data', {}).get('reference')
+        if not authorization_url or not reference:
+            raise ValueError('Missing Paystack authorization URL or reference')
+        
+        # Store transaction in database for verification even if session is lost
+        payment_tx = PaymentTransaction(
+            user_id=current_user.id,
+            paystack_reference=reference,
+            amount_kobo=amount_kobo,
+            status='pending'
+        )
+        db.session.add(payment_tx)
+        db.session.commit()
+        
         return redirect(authorization_url)
     except Exception as exc:
         logger.exception('Paystack payment initialization failed: %s', exc)
@@ -747,8 +773,9 @@ def pay():
         return redirect(url_for('dashboard'))
 
 @app.route('/verify')
-@login_required
 def verify_payment():
+    # Does NOT require login — allows verification even if session is lost.
+    # Looks up user via the PaymentTransaction record.
     reference = request.args.get('reference')
     if not reference:
         flash('Missing payment reference.')
@@ -756,6 +783,25 @@ def verify_payment():
 
     if not PAYSTACK_SECRET:
         flash('Payment configuration is missing. Please contact support.')
+        return redirect(url_for('dashboard'))
+
+    # Find the payment transaction by reference
+    payment_tx = PaymentTransaction.query.filter_by(paystack_reference=reference).first()
+    if not payment_tx:
+        flash('Payment record not found. Please contact support.')
+        return redirect(url_for('login'))
+
+    user = User.query.get(payment_tx.user_id)
+    if not user:
+        flash('User account not found.')
+        return redirect(url_for('login'))
+
+    # If already verified, skip re-verification
+    if payment_tx.status == 'success':
+        flash('Your account has already been activated.')
+        # Log them in if they're not already logged in
+        if not current_user.is_authenticated:
+            login_user(user)
         return redirect(url_for('dashboard'))
 
     headers = {'Authorization': f'Bearer {PAYSTACK_SECRET}'}
@@ -769,32 +815,38 @@ def verify_payment():
     except Exception as exc:
         logger.exception('Paystack verification failed: %s', exc)
         flash('Unable to verify payment at this time.')
-        return redirect(url_for('dashboard'))
+        return redirect(url_for('dashboard') if current_user.is_authenticated else url_for('login'))
 
     data = res.get('data', {})
     if res.get('status') and data.get('status') == 'success':
-        if not current_user.is_active_member:
-            current_user.is_active_member = True
-            if current_user.referred_by:
-                referrer = User.query.filter_by(referral_code=current_user.referred_by).first()
+        if not user.is_active_member:
+            user.is_active_member = True
+            if user.referred_by:
+                referrer = User.query.filter_by(referral_code=user.referred_by).first()
                 if referrer:
                     referrer.balance_usd += 0.50
                     referral_rec = ReferralHistory.query.filter_by(
-                        referred_user_id=current_user.id
+                        referred_user_id=user.id
                     ).first()
                     if referral_rec:
                         referral_rec.earnings_usd = 0.50
                         referral_rec.status = 'Active'
                     maybe_reset_daily_chances(referrer)
-            db.session.commit()
-            flash('Account Activated!')
-        else:
-            flash('Your account is already active.')
+        # Mark transaction as verified
+        payment_tx.status = 'success'
+        payment_tx.verified_at = datetime.utcnow()
+        db.session.commit()
+        flash('Account Activated!')
+        # Log them in automatically for convenience
+        if not current_user.is_authenticated:
+            login_user(user)
     else:
+        payment_tx.status = 'failed'
+        db.session.commit()
         logger.warning('Paystack verification returned unsuccessful response: %s', res)
         flash('Payment was not successful. Please try again.')
 
-    return redirect(url_for('dashboard'))
+    return redirect(url_for('dashboard') if current_user.is_authenticated else url_for('login'))
 
 
 # --- TRIVIA ENGINE ---
